@@ -188,9 +188,18 @@ class ActionExecutor:
                     self._save_persistent_config()
                     agent_print(f"[Always-run: {key} — saved for future sessions]")
                 return True
-            elif ans in ("d", "diff"):
+            elif ans in ("d", "diff", "details"):
                 if diff_text:
                     self._show_diff(diff_text)
+                elif atype in ("tool", "skill"):
+                    import json as _json
+                    params = details.get("params", {})
+                    agent_print(f"  Parameters: {_json.dumps(params, indent=2, ensure_ascii=False)}")
+                elif atype == "run":
+                    agent_print(f"  Full command: {details.get('command', '')}")
+                    agent_print(f"  Safety level: {details.get('level', 'unknown')}")
+                elif atype in ("write", "edit"):
+                    agent_print(f"  File: {details.get('path', '')}")
                 else:
                     agent_print("[No details available]")
                 continue

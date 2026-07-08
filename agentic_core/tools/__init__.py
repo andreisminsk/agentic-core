@@ -9,6 +9,7 @@ from .web import (
     WebSearchTool, WebFetchTool, HttpRequestTool, TimeNowTool,
 )
 from .calculator import CalculatorTool
+from .image_analysis import ImageAnalysisTool
 
 
 class Tool:
@@ -92,5 +93,5 @@ for _t in (ReadFileTool(), WriteFileTool(), ListFilesTool(),
            MkdirTool(), CopyFileTool(), MoveFileTool(),
            ReplaceInFileTool(),
            WebSearchTool(), WebFetchTool(), HttpRequestTool(), TimeNowTool(),
-           CalculatorTool()):
+           CalculatorTool(), ImageAnalysisTool()):
     register(_t)

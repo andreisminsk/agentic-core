@@ -152,7 +152,8 @@ def main():
             if e.partial_text:
                 print(f"  partial: {e.partial_text[:200]}")
             continue
-        print(f"\nassistant> {response}\n")
+        # Streaming already displayed the response; just add a separator
+        print()
 
 
 if __name__ == "__main__":

@@ -702,6 +702,32 @@ build_system_prompt(
 | `http_request` | ❌ | HTTP GET/POST/PUT/DELETE (needs `httpx`) |
 | `time_now` | ✅ | Current date/time/timezone |
 | `calculator` | ✅ | Safe math expression evaluation |
+| `image-analysis` | ❌ | Analyze images via vision model (needs `ollama`) |
+
+### Configuring Image Analysis
+
+The `image-analysis` tool is registered by default with no arguments,
+which means it lazily creates an `ollama.Client(host="http://localhost:11434")`
+and uses the model **`gemma4:31b-cloud`**. To use a different model or
+share an existing client, re-register with custom arguments:
+
+```python
+from agentic_core.tools import register, ImageAnalysisTool
+
+# Option 1: Specify model + base_url (client created lazily)
+register(ImageAnalysisTool(model="llama3.2-vision:11b", base_url="http://localhost:11434"))
+
+# Option 2: Inject an existing client (recommended — shares connection)
+register(ImageAnalysisTool(client=my_client, model="gemma4:31b-cloud"))
+
+# Option 3: Use the session's client
+session = AgenticSession(client, model="glm-5.1:cloud", ...)
+register(ImageAnalysisTool(client=session.client, model="gemma4:31b-cloud"))
+```
+
+The tool validates image MIME type (JPEG, PNG, GIF, BMP, WebP, TIFF, ICO)
+and enforces a 20MB size limit. Images are base64-encoded and sent to the
+vision model with the prompt.
 
 ## Graceful Interrupt Handling (Ctrl+C)
 
