@@ -1,11 +1,38 @@
 # agentic_core
 
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Tests: 124](https://img.shields.io/badge/tests-124%20passed-brightgreen.svg)](#testing)
+[![Dependencies: 0](https://img.shields.io/badge/dependencies-0%20hard-blue.svg)](#dependencies)
+
 A minimalistic, reusable Python package that gives any Ollama LLM chat
 application agentic capabilities — file reading/writing/editing, shell
 command execution, and extensible tool/skill workflows — through a
 text-based block protocol.
 
-## What This Is
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Dependencies](#dependencies)
+- [Quick Start](#quick-start)
+- [How It Works](#how-it-works)
+- [The Block Protocol](#the-block-protocol)
+- [Integration Guide](#integration-guide)
+- [Architecture Patterns](#architecture-patterns)
+- [Integrating With an Existing Feedback Loop](#integrating-with-an-existing-feedback-loop)
+- [API Reference](#api-reference)
+- [Built-in Tools](#built-in-tools)
+- [Graceful Interrupt Handling](#graceful-interrupt-handling-ctrlc)
+- [Safety](#safety)
+- [Project Structure](#project-structure)
+- [Testing](#testing)
+- [License](#license)
+
+---
+
+## Overview
 
 `agentic_core` implements a **block-based action protocol** that sits
 between an LLM and your application. The model emits structured blocks
@@ -24,13 +51,36 @@ the `ollama` library directly.
 ### Why Use It
 
 - **Embed agentic behavior** in any Ollama chat app with ~3 lines of code
-- **Zero dependencies** — pure Python stdlib, cross-platform
+- **Zero hard dependencies** — pure Python stdlib, cross-platform
 - **Extensible** — add custom tools and skills by subclassing
 - **Safe** — built-in command safety checks, blocked/warning lists,
   pluggable confirmation callbacks
 - **Context-aware** — automatic truncation prevents context window bloat
 - **Battle-tested parser** — handles fence depth, bare EOF, smart quotes,
   markdown blocks, and edge cases from real LLM output
+- **Comprehensive test suite** — 124 tests covering parser, executor,
+  session loop, streaming, and interruption handling
+
+---
+
+## Dependencies
+
+**Required:** Python 3.9+ (uses `ast.Constant`, `math.dist`)
+
+**Optional** (installed on-demand by specific tools):
+
+| Package | Tool | Install |
+|---------|------|---------|
+| `ollama` | `image-analysis` | `pip install ollama` |
+| `ddgs` | `web_search` (reliable mode) | `pip install ddgs` |
+| `httpx` | `http_request` | `pip install httpx` |
+| `beautifulsoup4` | `web_fetch` (cleaner HTML parsing) | `pip install beautifulsoup4` |
+
+Without optional packages, the core and all file/shell tools work fully.
+`web_search` falls back to a stdlib urllib scraper, and `web_fetch` falls
+back to a stdlib `html.parser`-based extractor.
+
+---
 
 ## Quick Start
 
@@ -38,6 +88,14 @@ the `ollama` library directly.
 
 No install needed — just copy the `agentic_core/` package into your
 project, or add it to your `PYTHONPATH`.
+
+For pip-based projects, you can also install from source:
+
+```bash
+git clone https://github.com/yourusername/agentic-core.git
+cd agentic-core
+pip install -e .  # if a setup.py/pyproject.toml is added
+```
 
 ### Minimal Usage
 
@@ -105,10 +163,12 @@ def confirm(action_type, details):
 session = AgenticSession(
     client,
     model="glm-5.1:cloud",
-    workdir=".
+    workdir=".",
     confirm_callback=confirm,
 )
 ```
+
+---
 
 ## How It Works
 
@@ -168,6 +228,8 @@ The model communicates actions through a simple text format:
 
 Each block (except RUN) is closed by a matching `**EOF:**` marker with
 the same path/name. RUN blocks use fenced code blocks (```bash ... ```).
+
+---
 
 ## Integration Guide
 
@@ -257,6 +319,8 @@ class MyClient:
 
 session = AgenticSession(MyClient(), model="my-model", workdir=".")
 ```
+
+---
 
 ## Architecture Patterns
 
@@ -427,7 +491,7 @@ plugin. The agentic session operates on the user's project directory.
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │ Editor UI    │────►│ Plugin Host  │────►│ AgenticSession│
-│ (chat panel) │◄────│ (bridge)     │◄────│ (workdir=     │
+│ (chat panel) │◄────│ (bridge)    │◄────│ (workdir=     │
 └──────────────┘     └──────────────┘     │  project root)│
                                           └──────────────┘
 ```
@@ -498,6 +562,8 @@ def fix_file(path, error_msg):
     session = AgenticSession(client, model="glm-5.1:cloud", workdir=".")
     return session.run(f"The file {path} has this error: {error_msg}. Fix it.")
 ```
+
+---
 
 ## Integrating With an Existing Feedback Loop
 
@@ -609,6 +675,8 @@ The key insight: **the core should offer the loop as a convenience, not a
 constraint.** `run()` is the convenience; `step()` (or manual
 parse+execute) is the escape hatch.
 
+---
+
 ## API Reference
 
 ### AgenticSession
@@ -634,7 +702,7 @@ AgenticSession(
 
 **Methods:**
 - `.run(user_text)` → str: Run the feedback loop, return final prose
-- `.reset()`: Clear history (keep system prompt)
+- `.reset()`: Clear conversation history (keep system prompt), reset loop detection
 
 **Attributes:**
 - `.history`: List of `{"role": ..., "content": ...}` messages
@@ -725,26 +793,28 @@ session = AgenticSession(client, model="glm-5.1:cloud", system_prompt=prompt)
 discipline) but keeps the tools/skills/platform sections. Useful for custom
 agent personas that still need the protocol.
 
+---
+
 ## Built-in Tools
 
-| Tool | Auto-approve | Description |
-|------|:---:|-------------|
-| `read_file` | ✅ | Read file contents (offset/limit) |
-| `write_file` | ✅ | Create/overwrite/append file |
-| `replace_in_file` | ✅ | Exact string replacement |
-| `list_files` | ✅ | List directory (recursive, glob) |
-| `find_file` | ✅ | Find files by name pattern |
-| `search_in_files` | ✅ | Regex search across files |
-| `peek_file` | ✅ | Head + tail of a file |
-| `mkdir` | ✅ | Create directory tree |
-| `copy_file` | ✅ | Copy file or directory |
-| `move_file` | ✅ | Move/rename file or directory |
-| `web_search` | ❌ | Search the web via DuckDuckGo (needs `ddgs`) |
-| `web_fetch` | ✅ | Fetch URL content, optional LLM summary |
-| `http_request` | ❌ | HTTP GET/POST/PUT/DELETE (needs `httpx`) |
-| `time_now` | ✅ | Current date/time/timezone |
-| `calculator` | ✅ | Safe math expression evaluation |
-| `image-analysis` | ❌ | Analyze images via vision model (needs `ollama`) |
+| Tool | Auto-approve | Description | Optional Dependency |
+|------|:---:|-------------|:---:|
+| `read_file` | ✅ | Read file contents (offset/limit) | — |
+| `write_file` | ✅ | Create/overwrite/append file | — |
+| `replace_in_file` | ✅ | Exact string replacement | — |
+| `list_files` | ✅ | List directory (recursive, glob) | — |
+| `find_file` | ✅ | Find files by name pattern | — |
+| `search_in_files` | ✅ | Regex search across files | — |
+| `peek_file` | ✅ | Head + tail of a file | — |
+| `mkdir` | ✅ | Create directory tree | — |
+| `copy_file` | ✅ | Copy file or directory | — |
+| `move_file` | ✅ | Move/rename file or directory | — |
+| `web_search` | ❌ | Search the web via DuckDuckGo | `ddgs` (falls back to urllib) |
+| `web_fetch` | ✅ | Fetch URL content, optional LLM summary | `beautifulsoup4` (falls back to stdlib) |
+| `http_request` | ❌ | HTTP GET/POST/PUT/DELETE | `httpx` (required) |
+| `time_now` | ✅ | Current date/time/timezone | — |
+| `calculator` | ✅ | Safe math expression evaluation | — |
+| `image-analysis` | ❌ | Analyze images via vision model | `ollama` (required) |
 
 ### Configuring Image Analysis
 
@@ -770,6 +840,8 @@ register(ImageAnalysisTool(client=session.client, model="gemma4:31b-cloud"))
 The tool validates image MIME type (JPEG, PNG, GIF, BMP, WebP, TIFF, ICO)
 and enforces a 20MB size limit. Images are base64-encoded and sent to the
 vision model with the prompt.
+
+---
 
 ## Graceful Interrupt Handling (Ctrl+C)
 
@@ -808,6 +880,8 @@ app can decide whether to continue, retry, or exit.
   response or observations from actions executed so far)
 - `.phase`: where it occurred — `'streaming'`, `'actions'`, or `'confirmation'`
 
+---
+
 ## Safety
 
 The core includes built-in safety mechanisms:
@@ -842,27 +916,75 @@ Persistent approvals are saved to `agentic-core.json` (configurable via
 `config_filename`) in the workdir. Non-interactive contexts (no TTY)
 auto-approve everything.
 
+---
+
 ## Project Structure
 
 ```
 agentic_core/
-├── __init__.py          # Public API
-├── constants.py         # Limits, safety lists, platform info
-├── parser.py            # Block extraction engine
-├── system_prompt.py     # System prompt builder (with date/time injection)
-├── actions.py           # Block executor + confirmation system
-├── matching.py          # Fuzzy matching for EDIT
+├── __init__.py          # Public API: AgenticSession, parse_actions, build_system_prompt
+├── constants.py         # Limits, safety lists, ANSI colors, platform info
+├── parser.py            # Block extraction engine (protocol parser)
+├── system_prompt.py     # Modular system prompt builder
+├── actions.py           # ActionExecutor: dispatch + confirmation + RUN/TOOL/SKILL
+├── safety.py            # CommandSafety mixin: blocked/warning/safe classification
+├── file_ops.py          # FileOperations mixin: WRITE/EDIT/FILE handlers
+├── utils.py             # Shared utilities: agent_print, tool_print, _truncate
+├── matching.py          # Layered fuzzy/exact matching for EDIT
 ├── edit_utils.py        # Diff/summary helpers
-├── session.py           # Feedback loop
+├── exceptions.py        # AgenticInterrupted
+├── session.py           # Feedback loop orchestrator
 ├── tools/
-│   ├── __init__.py      # Tool registry + base class
-│   ├── fs.py            # Built-in file tools (10)
+│   ├── __init__.py      # Tool base class + registry + auto-registration
+│   ├── fs.py            # 10 built-in file system tools
 │   ├── web.py           # web_search, web_fetch, http_request, time_now
-│   └── calculator.py     # Safe math expression evaluator
+│   ├── calculator.py    # Safe AST-based math expression evaluator
+│   └── image_analysis.py # Vision model image analysis
 └── skills/
-    ├── __init__.py      # Skill registry
-    └── base.py          # Skill + PromptOnlySkill
+    ├── __init__.py      # Skill registry + system prompt builder
+    └── base.py          # Skill + PromptOnlySkill base classes
 ```
+
+### Architecture: Mixin Composition
+
+`ActionExecutor` uses mixin composition to keep concerns separated while
+maintaining a single public API:
+
+```
+ActionExecutor(CommandSafety, FileOperations)
+├── CommandSafety  (safety.py)    → _check_command_safety, _get_base_command, _is_safe_command
+├── FileOperations (file_ops.py) → _do_write, _do_edit, _do_file, _preview_edit_diff
+└── ActionExecutor (actions.py)  → execute_actions, _should_approve, _do_run, _do_tool, _do_skill
+```
+
+---
+
+## Testing
+
+The project includes 124 tests across two test files:
+
+```bash
+# Run all tests
+python -m pytest test_parser.py test_session.py -v
+
+# Run only session-level tests (feedback loop, streaming, interruption)
+python -m pytest test_session.py -v
+
+# Run only parser/executor tests
+python -m pytest test_parser.py -v
+```
+
+### Test Coverage
+
+| File | Tests | Scope |
+|------|-------|-------|
+| `test_parser.py` | 103 | Parser (WRITE/EDIT/FILE/RUN/TOOL/SKILL), matching, edit utils, action executor safety |
+| `test_session.py` | 21 | Feedback loop, streaming, interruption handling, system prompt |
+
+The session tests use mock clients (`MockClient`, `InterruptingClient`)
+that simulate Ollama API responses — no real Ollama server required.
+
+---
 
 ## License
 

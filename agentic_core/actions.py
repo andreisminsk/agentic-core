@@ -1,64 +1,27 @@
-"""Action execution: WRITE, EDIT, FILE, RUN, TOOL, SKILL blocks from LLM output."""
+"""Action execution: WRITE, EDIT, FILE, RUN, TOOL, SKILL blocks from LLM output.
+
+ActionExecutor orchestrates action dispatch and confirmation. Safety checking
+is provided by CommandSafety (safety.py), file operations by FileOperations
+(file_ops.py), and shared utilities by utils.py.
+"""
 
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 
 from .constants import (
-    SAFE_SHELL_COMMANDS, BLOCKED_COMMANDS, WARNING_COMMANDS,
     MAX_OBSERVATION_CHARS, MAX_READ_OBSERVATION_CHARS,
     MAX_TOOL_OBSERVATION_CHARS, MAX_TOTAL_OBSERVATION_CHARS,
     MAX_CONSOLE_DISPLAY_CHARS, MAX_BATCH_WRITES,
-    ANSI_AGENT, ANSI_RESET, ANSI_TOOL,
 )
-from .edit_utils import make_edit_summary, make_unified_diff
-from .parser import parse_edit_content
-from .matching import find_match_in_content
+from .utils import agent_print, tool_print, _truncate
+from .safety import CommandSafety, _fix_win_backslash_quote
+from .file_ops import FileOperations
 
 
-def _fix_win_backslash_quote(m):
-    """Fix odd number of backslashes before a closing quote on Windows.
-
-    In cmd.exe, \" is an escaped quote, so "C:\\path\\" is parsed as C:\\path"
-    (invalid path). Remove one backslash from odd-length runs so the quote
-    properly terminates the argument.
-    """
-    backslashes = m.group(1)
-    if len(backslashes) % 2 == 1:
-        return backslashes[:-1] + '"'
-    return m.group(0)
-
-def agent_print(*args, **kwargs):
-    """Print with agent color when stdout is a TTY."""
-    if sys.stdout.isatty():
-        print(ANSI_AGENT, end="", flush=True)
-        print(*args, **kwargs)
-        print(ANSI_RESET, end="", flush=True)
-    else:
-        print(*args, **kwargs)
-
-
-def tool_print(*args, **kwargs):
-    """Print with tool color when stdout is a TTY."""
-    if sys.stdout.isatty():
-        print(ANSI_TOOL, end="", flush=True)
-        print(*args, **kwargs)
-        print(ANSI_RESET, end="", flush=True)
-    else:
-        print(*args, **kwargs)
-
-
-def _truncate(text, max_chars):
-    """Truncate text to max_chars, adding a notice if truncated."""
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n[... truncated, {len(text)} chars total]"
-
-
-class ActionExecutor:
+class ActionExecutor(CommandSafety, FileOperations):
     """Executes parsed action blocks and returns observations for the model."""
 
     # Names that are obviously placeholders, not real file paths or tool/skill names
@@ -67,47 +30,6 @@ class ActionExecutor:
         "skill", "skill_name",
     }
 
-    # Shell operators that allow chaining multiple commands.
-    # Includes command substitution ($(...), backticks), process substitution
-    # (<(...), >(...)), and newlines — all can hide destructive commands
-    # inside an otherwise "safe" base command (e.g., echo $(rm -rf /)).
-    _SHELL_OPERATORS = re.compile(r'&&|\|\||[|;&]|\$\(|`|\n|\r|<\(|>\(')
-
-    # Patterns that are ALWAYS blocked — never executed.
-    _BLOCKED_PATTERNS = [
-        re.compile(r'\brm\s+-[rR].*\s+/\s*$', re.IGNORECASE),      # rm -rf /
-        re.compile(r'\brm\s+-[rR].*\s+/\*', re.IGNORECASE),        # rm -rf /*
-        re.compile(r'\brm\s+-[rRf]*\s+/', re.IGNORECASE),          # rm -rf / anywhere (incl. inside $())
-        re.compile(r'\brm\s+--recursive.*\s+/', re.IGNORECASE),    # rm --recursive /
-        re.compile(r'\bdd\s+if=', re.IGNORECASE),                  # dd if=...
-        re.compile(r'\bmkfs\b', re.IGNORECASE),                    # mkfs
-        re.compile(r'\bshutdown\b', re.IGNORECASE),                # shutdown
-        re.compile(r'\breboot\b', re.IGNORECASE),                  # reboot
-        re.compile(r'\bpoweroff\b', re.IGNORECASE),                # poweroff
-        re.compile(r'\bhalt\b', re.IGNORECASE),                    # halt
-        re.compile(r'\bformat\s+[A-Za-z]:', re.IGNORECASE),        # format C:
-        re.compile(r'\bdel\s+/s\s+/q\s+[cC]:', re.IGNORECASE),    # del /s /q C:
-        re.compile(r'\brmdir\s+/s\s+/q\s+[cC]:', re.IGNORECASE),  # rmdir /s /q C:
-    ]
-
-    # Base commands that always require explicit confirmation (platform-specific)
-    _WARNING_BASE_COMMANDS_UNIX = {
-        'rm', 'rmdir', 'chmod', 'chown', 'kill', 'killall',
-        'apt', 'apt-get', 'yum', 'dnf', 'brew',
-        'systemctl', 'service',
-    }
-    _WARNING_BASE_COMMANDS_WINDOWS = {
-        'del', 'rmdir', 'taskkill', 'sc', 'net', 'netsh',
-    }
-    _WARNING_BASE_COMMANDS = (
-        _WARNING_BASE_COMMANDS_WINDOWS if sys.platform == 'win32'
-        else _WARNING_BASE_COMMANDS_UNIX
-    )
-    # Substrings that indicate destructive package/git operations
-    _WARNING_SUBSTRINGS = {
-        'pip uninstall', 'npm uninstall',
-        'git push', 'git reset --hard', 'git clean',
-    }
     def __init__(self, workdir=".", confirm_callback=None, auto_approve_safe=False,
                  config_filename="agentic-core.json"):
         self.workdir = os.path.abspath(workdir)
@@ -127,7 +49,6 @@ class ActionExecutor:
 
     def _load_persistent_config(self):
         """Load persistent always-writes/always-runs from config file."""
-        import json
         path = self._config_path()
         if not os.path.isfile(path):
             return
@@ -141,7 +62,6 @@ class ActionExecutor:
 
     def _save_persistent_config(self):
         """Save always-writes/always-runs to config file."""
-        import json
         path = self._config_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         try:
@@ -281,87 +201,6 @@ class ActionExecutor:
             else:
                 print(line)
 
-    def _check_command_safety(self, cmd):
-        """Check a command for safety. Returns (level, message).
-
-        level: 'blocked' — never execute
-               'warning' — requires explicit confirmation even with auto-approve
-               'chain'   — shell chaining detected, warn but allow with confirmation
-               'safe'    — no issues
-        """
-        for pat in self._BLOCKED_PATTERNS:
-            if pat.search(cmd):
-                return ('blocked', f"Command blocked for safety: {cmd[:80]}")
-        base = self._get_base_command(cmd)
-        if base in BLOCKED_COMMANDS:
-            return ('blocked', f"Command blocked for safety: {cmd[:80]}")
-        if base in WARNING_COMMANDS or base in self._WARNING_BASE_COMMANDS:
-            return ('warning', f"Destructive command requires confirmation: {cmd[:80]}")
-        for substr in self._WARNING_SUBSTRINGS:
-            if substr in cmd.lower():
-                return ('warning', f"Destructive command requires confirmation: {cmd[:80]}")
-        if self._SHELL_OPERATORS.search(cmd):
-            return ('chain', f"Shell chaining detected: {cmd[:80]}")
-        return ('safe', '')
-
-    @staticmethod
-    def _get_base_command(cmd):
-        """Extract the base command name from a shell command string."""
-        cmd = cmd.strip()
-        if not cmd:
-            return ""
-        # Handle quoted executables: "C:\path\app.exe" args
-        if cmd[0] == '"':
-            end = cmd.find('"', 1)
-            if end > 0:
-                base = cmd[1:end]
-            else:
-                base = cmd[1:].split(None, 1)[0] if len(cmd) > 1 else ""
-        else:
-            base = cmd.split(None, 1)[0]
-        # Get just the executable name without path
-        base = os.path.basename(base).lower()
-        # Remove common executable extensions
-        for ext in ('.exe', '.cmd', '.bat', '.com'):
-            if base.endswith(ext):
-                base = base[:-len(ext)]
-                break
-        return base
-
-    def _is_safe_command(self, cmd):
-        """Check if a command is considered safe/read-only (no confirmation needed).
-
-        Commands containing shell operators (&&, ||, |, &, ;, $(), etc.) are
-        never auto-approved, since a safe prefix like 'dir' could chain into a
-        dangerous command like 'del /s *'.
-        """
-        if self._SHELL_OPERATORS.search(cmd):
-            return False
-        return self._get_base_command(cmd) in SAFE_SHELL_COMMANDS
-
-    def _save_pre_edit(self, path, content):
-        """Save file content before modification for potential rollback."""
-        if not hasattr(self, '_pre_edit_snapshots'):
-            self._pre_edit_snapshots = {}
-        if path not in self._pre_edit_snapshots:
-            self._pre_edit_snapshots[path] = content
-
-    def _rollback_edits(self, modified, created):
-        """Restore files to their pre-edit state and remove newly created files."""
-        for path in modified:
-            if path in self._pre_edit_snapshots:
-                full_path = os.path.join(self.workdir, path)
-                os.makedirs(os.path.dirname(full_path) or ".", exist_ok=True)
-                with open(full_path, "w", encoding="utf-8") as f:
-                    f.write(self._pre_edit_snapshots[path])
-        for path in created:
-            full_path = os.path.join(self.workdir, path)
-            if os.path.isfile(full_path):
-                try:
-                    os.remove(full_path)
-                except OSError:
-                    pass
-
     def execute_actions(self, actions):
         """Execute a list of parsed actions. Returns list of observation strings.
 
@@ -413,6 +252,7 @@ class ActionExecutor:
                             modified.add(path)
                     else:
                         created.add(path)
+
             # Confirmation
             try:
                 if not self._should_approve(atype, action):
@@ -498,32 +338,6 @@ class ActionExecutor:
 
         return True
 
-    def _preview_edit_diff(self, action):
-        """Generate a diff preview for an EDIT action before execution."""
-        path = action["path"]
-        full = os.path.join(self.workdir, path)
-        if not os.path.isfile(full):
-            return None
-        try:
-            with open(full, "r", encoding="utf-8") as f:
-                original = f.read()
-        except Exception:
-            return None
-        blocks = parse_edit_content(action["code"])
-        if not blocks:
-            return None
-        content = original
-        for search_text, replace_text in blocks:
-            if not search_text:
-                content = content + replace_text
-                continue
-            match_info = find_match_in_content(content, search_text)
-            if match_info is None:
-                continue
-            start, end, _ = match_info
-            content = content[:start] + replace_text + content[end:]
-        return make_unified_diff(path, original, content)
-
     def _execute_one(self, action):
         """Execute a single action and return its observation string."""
         atype = action["type"]
@@ -541,116 +355,6 @@ class ActionExecutor:
             return self._do_skill(action)
         return f"[Unknown action type: {atype}]"
 
-    def _do_write(self, action):
-        path = action["path"]
-        code = action["code"]
-        full = os.path.join(self.workdir, path)
-        # Cache previous version
-        if os.path.isfile(full):
-            cache_dir = os.path.join(self.workdir, ".uhu", ".cache")
-            os.makedirs(cache_dir, exist_ok=True)
-            base, ext = os.path.splitext(path)
-            for i in range(1, 999):
-                cache_name = f"{base}.{i}{ext}"
-                cache_path = os.path.join(cache_dir, cache_name)
-                if not os.path.exists(cache_path):
-                    try:
-                        shutil.copy2(full, cache_path)
-                    except Exception:
-                        pass
-                    break
-        # Create parent dirs
-        parent = os.path.dirname(full)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        try:
-            with open(full, "w", encoding="utf-8") as f:
-                f.write(code)
-            lines = code.count('\n') + (1 if code and not code.endswith('\n') else 0)
-            agent_print(f"[Wrote: {path} ({len(code)} bytes, {lines} lines)]")
-            return f"[Wrote: {path} ({len(code)} bytes, {lines} lines)]"
-        except Exception as e:
-            return f"Error writing {path}: {e}"
-    def _do_edit(self, action):
-        path = action["path"]
-        code = action["code"]
-        full = os.path.join(self.workdir, path)
-        if not os.path.isfile(full):
-            return f"Error: file not found for edit: {path}"
-        try:
-            with open(full, "r", encoding="utf-8", errors="replace") as f:
-                original = f.read()
-        except Exception as e:
-            return f"Error reading {path}: {e}"
-
-        blocks = parse_edit_content(code)
-        if not blocks:
-            return f"Error: no search/replace blocks found in EDIT for {path}"
-
-        content = original
-        edits_applied = []
-        failures = []
-        for search_text, replace_text in blocks:
-            if not search_text:
-                # Insert at end
-                content = content + replace_text
-                edits_applied.append((len(content.split('\n')) - 1, len(content.split('\n')), 'insert', search_text, replace_text))
-                continue
-            match_info = find_match_in_content(content, search_text)
-            if match_info is None:
-                failures.append(search_text)
-                continue
-            start, end, quality = match_info
-            content = content[:start] + replace_text + content[end:]
-            edits_applied.append((start, end, quality, search_text, replace_text))
-
-        if not edits_applied and failures:
-            # All search blocks failed — show file content snippet to help model
-            snippet_lines = original.split('\n')[:20]
-            snippet = '\n'.join(snippet_lines)
-            if len(original.split('\n')) > 20:
-                snippet += f"\n... ({len(original.split(chr(10)))} lines total)"
-            return (
-                f"[EDIT FAILED: {path} — search text not found]\n"
-                f"File content:\n{snippet}"
-            )
-
-        if failures:
-            # Some blocks failed — apply what we can, warn about the rest
-            failed_previews = [f[:80].replace('\n', '\\n') for f in failures]
-
-        try:
-            os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
-            with open(full, "w", encoding="utf-8") as f:
-                f.write(content)
-        except Exception as e:
-            return f"Error writing {path}: {e}"
-
-        summary = make_edit_summary(path, edits_applied)
-        diff = make_unified_diff(path, original, content)
-        agent_print(summary)
-        if failures:
-            return (
-                f"{summary}\n{diff}\n"
-                f"[WARNING: {len(failures)} search block(s) not found: "
-                f"{'; '.join(failed_previews)}]"
-            )
-        return f"{summary}\n{diff}"
-    def _do_file(self, action):
-        path = action["path"]
-        full = os.path.join(self.workdir, path)
-        if not os.path.isfile(full):
-            return f"Error: file not found: {path}"
-        try:
-            with open(full, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-            lines_count = content.count('\n') + (1 if content and not content.endswith('\n') else 0)
-            header = f"[File: {path} | {lines_count} lines]"
-            tool_print(header)
-            tool_print(content[:MAX_CONSOLE_DISPLAY_CHARS])
-            return f"{header}\n{content}"
-        except Exception as e:
-            return f"Error reading {path}: {e}"
     def _do_run(self, action):
         cmd = action["code"]
         lang = action.get("lang", "bash")
@@ -718,6 +422,7 @@ class ActionExecutor:
             return f"Error: command timed out after 120s: {cmd[:80]}"
         except Exception as e:
             return f"Error running command: {e}"
+
     def _do_tool(self, action):
         from .tools import get as get_tool
         name = action["path"]
