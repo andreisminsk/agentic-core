@@ -24,6 +24,7 @@ class ImageAnalysisTool:
     ollama and creates a default client.
     """
     name = "image-analysis"
+    do_not_truncate_observations = True
     description = "Analyze an image file using a vision-capable model."
     system_prompt = (
         "## image-analysis\n"

@@ -93,7 +93,7 @@ class CalculatorTool:
         try:
             result = _safe_eval(expr)
         except Exception as exc:
-            return f"Error evaluating '{expr}': {exc}"
+            return f"Error: Failed to evaluate '{expr}': {exc}"
         if precision is not None and isinstance(result, (int, float)):
             result = round(result, int(precision))
         if isinstance(result, float) and result == int(result) and abs(result) < 1e15:

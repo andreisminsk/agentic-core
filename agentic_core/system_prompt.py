@@ -65,6 +65,7 @@ _BASE_PROMPT = (
     "- NEVER omit **WRITE:**, **EDIT:**, or **EOF:** markers.\n"
     "- The path in **WRITE:**/**EDIT:** and **EOF:** must match exactly.\n"
     "- ALWAYS include the path in **EOF:**.\n"
+    "- ALWAYS start **WRITE:**, **EDIT:**, **FILE:**, **RUN:**, **TOOL:**, **SKILL:**, and **EOF:** markers on a NEW LINE. Never place them inline after other text on the same line — they will be missed by the parser.\n"
     "- Use the full relative path (e.g. src/app.py, not just app.py).\n"
     "- Parent directories are created automatically.\n\n"
     "OUTPUT DISCIPLINE:\n"

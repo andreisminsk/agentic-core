@@ -671,17 +671,59 @@ class MySkill(Skill):
 
 Register with `register_skill(MySkill())`.
 
-### build_system_prompt
+### System Prompt Customization
+
+There are three levels of control over the system prompt:
+
+**Level 1 — Full override** (pass `system_prompt=` to `AgenticSession`):
 
 ```python
-build_system_prompt(
-    name="uhu",
-    tools=False,
-    skills=False,
-    extra_sections=None,  # list of strings to append
-    identity=None,        # replace the entire base prompt
+session = AgenticSession(
+    client, model="glm-5.1:cloud",
+    system_prompt="You are a French coding assistant...",
 )
 ```
+
+Completely replaces the default. The consumer is responsible for including
+all protocol instructions (WRITE/EDIT/FILE/RUN/TOOL/SKILL format).
+
+**Level 2 — Builder with options** (use `build_system_prompt()`):
+
+```python
+from agentic_core import build_system_prompt
+
+prompt = build_system_prompt(
+    name="myapp",           # agent identity
+    tools=True,             # include TOOL: rules
+    skills=True,            # include SKILL: rules
+    extra_sections=[        # append custom sections
+        "Always respond in French.",
+        "Never delete files without asking.",
+    ],
+    identity=None,          # replace base prompt, keep tools/skills rules
+)
+session = AgenticSession(client, model="glm-5.1:cloud", system_prompt=prompt)
+```
+
+**Level 3 — Default** (no args):
+
+`AgenticSession` auto-builds with `name="uhu"`, `tools=True`,
+`skills=False`, and appends tool/skill registry prompts automatically.
+
+**What the builder includes automatically:**
+
+- Current date/time with timezone
+- Agent name
+- Block protocol instructions (WRITE/EDIT/FILE/RUN + EOF)
+- Platform shell guidance (Windows/Unix)
+- Tool rules (when `tools=True`) + tool registry system prompts
+- Skill rules (when `skills=True`) + skill registry system prompts
+- Call-and-wait rules (when tools or skills enabled)
+- Time awareness guidance (when `tools=True`)
+
+**What `identity=` does:** replaces the base prompt (name, protocol, output
+discipline) but keeps the tools/skills/platform sections. Useful for custom
+agent personas that still need the protocol.
 
 ## Built-in Tools
 
