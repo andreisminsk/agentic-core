@@ -2,13 +2,14 @@
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests: 124](https://img.shields.io/badge/tests-124%20passed-brightgreen.svg)](#testing)
+[![Tests: 157](https://img.shields.io/badge/tests-157%20passed-brightgreen.svg)](#testing)
 [![Dependencies: 0](https://img.shields.io/badge/dependencies-0%20hard-blue.svg)](#dependencies)
 
-A minimalistic, reusable Python package that gives any Ollama LLM chat
+A minimalistic, reusable Python package that gives any LLM chat
 application agentic capabilities — file reading/writing/editing, shell
 command execution, and extensible tool/skill workflows — through a
-text-based block protocol.
+text-based block protocol. Supports both Ollama and OpenAI-compatible
+APIs via a pluggable backend abstraction with optional TPM rate limiting.
 
 ---
 
@@ -17,6 +18,7 @@ text-based block protocol.
 - [Overview](#overview)
 - [Dependencies](#dependencies)
 - [Quick Start](#quick-start)
+- [Backends](#backends)
 - [How It Works](#how-it-works)
 - [The Block Protocol](#the-block-protocol)
 - [Integration Guide](#integration-guide)
@@ -45,8 +47,10 @@ produces a final text-only response.
 This pattern was extracted from the
 [`ollama-chat-agentic`](https://github.com/) project and distilled into
 a standalone library with zero hard dependencies (Python stdlib only).
-The Ollama client is injected via duck-typing — the core never imports
-the `ollama` library directly.
+The LLM client is injected via a backend abstraction — the core never
+imports `ollama` or `openai` directly. Two backends ship built-in:
+`OllamaBackend` (zero-overhead passthrough) and `OpenAIBackend` (with
+optional TPM limiting, history trimming, and retry).
 
 ### Why Use It
 
@@ -58,8 +62,10 @@ the `ollama` library directly.
 - **Context-aware** — automatic truncation prevents context window bloat
 - **Battle-tested parser** — handles fence depth, bare EOF, smart quotes,
   markdown blocks, and edge cases from real LLM output
-- **Comprehensive test suite** — 124 tests covering parser, executor,
-  session loop, streaming, and interruption handling
+- **Multi-backend** — Ollama and OpenAI-compatible APIs via pluggable
+  backends, with optional TPM rate limiting and context trimming
+- **Comprehensive test suite** — 157 tests covering parser, executor,
+  session loop, streaming, interruption, and backend middleware
 
 ---
 
@@ -67,14 +73,16 @@ the `ollama` library directly.
 
 **Required:** Python 3.9+ (uses `ast.Constant`, `math.dist`)
 
-**Optional** (installed on-demand by specific tools):
+**Optional** (installed on-demand by specific features):
 
-| Package | Tool | Install |
-|---------|------|---------|
-| `ollama` | `image-analysis` | `pip install ollama` |
-| `ddgs` | `web_search` (reliable mode) | `pip install ddgs` |
-| `httpx` | `http_request` | `pip install httpx` |
-| `beautifulsoup4` | `web_fetch` (cleaner HTML parsing) | `pip install beautifulsoup4` |
+| Package | Used by | Install |
+|---------|---------|---------|
+| `ollama` | `image-analysis` tool, `OllamaBackend` (if constructing inside) | `pip install ollama` |
+| `openai` | `OpenAIBackend` | `pip install openai` |
+| `tiktoken` | `TokenCounter` (accurate token counting; falls back to char/4) | `pip install tiktoken` |
+| `ddgs` | `web_search` tool (reliable mode) | `pip install ddgs` |
+| `httpx` | `http_request` tool | `pip install httpx` |
+| `beautifulsoup4` | `web_fetch` tool (cleaner HTML parsing) | `pip install beautifulsoup4` |
 
 Without optional packages, the core and all file/shell tools work fully.
 `web_search` falls back to a stdlib urllib scraper, and `web_fetch` falls
@@ -122,6 +130,47 @@ session = AgenticSession(
 response = session.run("List all Python files in this directory")
 ```
 
+### OpenAI-Compatible Backend (no TPM)
+
+Use `OpenAIBackend` to connect to any OpenAI-compatible endpoint (OpenAI,
+Ollama `/v1`, vLLM, LM Studio, etc.):
+
+```python
+from agentic_core import AgenticSession
+from agentic_core.backends import OpenAIBackend
+
+backend = OpenAIBackend(
+    base_url="http://localhost:11434",  # /v1 appended automatically
+    api_key="ollama",
+    model="glm-5.1:cloud",
+    ctx_size=32768,
+)
+session = AgenticSession(backend=backend, workdir=".")
+response = session.run("Create a hello.py file that prints hello world")
+```
+
+### OpenAI-Compatible Backend with TPM Limiting
+
+When `tpm_limit` is set, the backend auto-configures a coordinated bundle:
+capped history trimming (smaller context = fewer tokens/request), proactive
+TPM waiting (rolling 60s window), and aggressive 429-aware retry.
+
+```python
+from agentic_core import AgenticSession
+from agentic_core.backends import OpenAIBackend
+
+backend = OpenAIBackend(
+    base_url="https://api.openai.com/v1",
+    api_key=os.environ["OPENAI_API_KEY"],
+    model="gpt-5.1",
+    ctx_size=32768,
+    tpm_limit=50000,       # activates: capped trimming + TPM tracker + aggressive retry
+    max_context=16384,      # trim history to 16K tokens (default: 16384)
+)
+session = AgenticSession(backend=backend, workdir=".")
+response = session.run("Create a hello.py file that prints hello world")
+```
+
 ### With Interactive Confirmation
 
 By default (`auto_approve_safe=False`), the built-in confirm callback
@@ -166,6 +215,142 @@ session = AgenticSession(
     workdir=".",
     confirm_callback=confirm,
 )
+```
+
+---
+
+## Backends
+
+`agentic_core` uses a **backend abstraction** to support multiple LLM APIs.
+The session calls `backend.call(messages, stream, on_chunk)` — the backend
+handles transport, rate limiting, and context management.
+
+### Backend ABC
+
+```python
+class Backend(ABC):
+    def call(self, messages, stream=True, on_chunk=None) -> (text, token_count):
+        # 1. TPMTracker.wait_if_needed()  — proactive throttle (if configured)
+        # 2. HistoryTrimmer.trim()        — context management (if configured)
+        # 3. RetryHandler.execute(_call) — retry on transient errors (if configured)
+        # 4. _call(messages, stream)     — backend-specific transport
+        # 5. TPMTracker.record_usage()   — record actual usage (if configured)
+
+    @abstractmethod
+    def _call(self, messages, stream=True, on_chunk=None) -> (text, token_count):
+        """Pure transport. Calls on_chunk(text) per streaming piece.
+        Does NOT catch KeyboardInterrupt — propagates to session."""
+```
+
+All middleware components are `Optional` and default to `None`. For
+`OllamaBackend` (all `None`), `call()` is a direct passthrough to `_call()`
+with zero overhead.
+
+### OllamaBackend
+
+Thin wrapper around a duck-typed client. **Zero middleware** — all
+components are `None`, preserving the exact behavior of direct
+`client.chat()` calls. The client is injected (not imported).
+
+```python
+from agentic_core.backends import OllamaBackend
+from ollama import Client
+
+backend = OllamaBackend(
+    client=Client(host="http://localhost:11434"),
+    model="glm-5.1:cloud",
+    temperature=0.0,
+)
+session = AgenticSession(backend=backend, workdir=".")
+```
+
+**Backward compatibility:** `AgenticSession(client=..., model=...)` auto-wraps
+the client in `OllamaBackend`. Existing code works unchanged.
+
+### OpenAIBackend
+
+Uses `openai.Client` with `/v1/chat/completions`. Works with any
+OpenAI-compatible endpoint: OpenAI, Ollama `/v1`, vLLM, LM Studio, etc.
+
+**Auto-configures middleware based on `tpm_limit`:**
+
+| | Without `tpm_limit` | With `tpm_limit` |
+|---|---|---|
+| **TokenCounter** | Always on | Always on |
+| **HistoryTrimmer** | Full `ctx_size` budget | Capped at `max_context` (default 16384) |
+| **RetryHandler** | Light: connection/500 only, 5s backoff | Aggressive: 429/rate_limit/connection, 20s backoff |
+| **TPMTracker** | Off | Rolling 60s window, proactive wait |
+
+The coupling is intentional: enabling TPM means "I'm on a rate-limited
+endpoint, so trim aggressively, wait proactively, and retry reactively."
+
+#### `ctx_size` vs `max_context`
+
+These two parameters control how much conversation history is sent to the
+model. They interact but serve different purposes:
+
+| Parameter | Role | Used when |
+|---|---|---|
+| `ctx_size` | The model's full context window (e.g. 128K for gpt-5.1). Upper bound for trimming. Also caps `max_completion_tokens` at `min(ctx_size, 8192)`. | Always |
+| `max_context` | Trim budget cap. When `tpm_limit` is set, the trimmer uses `min(ctx_size, max_context)` instead of the full `ctx_size`. Smaller = fewer tokens/request = stretches TPM budget. | Only with `tpm_limit` |
+
+**Without `tpm_limit`:** `max_context` is ignored. The trimmer uses `ctx_size`
+as the budget — the model sees the full context window.
+
+**With `tpm_limit`:** The trimmer uses `min(ctx_size, max_context)` (default
+16384). A smaller `max_context` means fewer tokens per request (stretching
+the TPM budget) at the cost of less conversation history visible to the model.
+
+**What gets trimmed:** The entire message list counts against the budget
+(system prompt + all history + latest message). The system prompt is always
+preserved. Middle messages are dropped oldest-first (replaced with a summary).
+The last message is preserved but may be truncated if still over budget.
+`reserve_output=2048` reserves space for the model's response, so the effective
+input budget is `trim_budget - 2048`.
+
+```python
+from agentic_core.backends import OpenAIBackend
+
+# Without TPM (light retry, full-ctx trimming)
+backend = OpenAIBackend(
+    base_url="http://localhost:11434",
+    api_key="ollama",
+    model="glm-5.1:cloud",
+    ctx_size=32768,
+)
+
+# With TPM (capped trimming + proactive wait + aggressive retry)
+backend = OpenAIBackend(
+    base_url="https://api.openai.com/v1",
+    api_key=os.environ["OPENAI_API_KEY"],
+    model="gpt-5.1",
+    ctx_size=32768,
+    tpm_limit=50000,
+    max_context=16384,
+)
+```
+
+### Middleware Components
+
+Each component can also be used standalone or manually attached to any
+backend via the `Backend` base class attributes:
+
+| Component | Purpose | Dependency |
+|---|---|---|
+| `TokenCounter` | tiktoken-based counting, char/4 fallback | `tiktoken` (optional) |
+| `TPMTracker` | Rolling 60s window, proactive throttle before send | stdlib |
+| `HistoryTrimmer` | Trim to token budget, preserve tool-call pairs, summarize dropped | `TokenCounter` |
+| `RetryHandler` | Jittered exponential backoff, `Retry-After` header parsing | stdlib |
+
+```python
+from agentic_core.backends import OllamaBackend, TokenCounter, TPMTracker, RetryHandler, HistoryTrimmer
+
+# Manually attach middleware to Ollama (advanced)
+backend = OllamaBackend(client, "glm-5.1:cloud")
+backend._token_counter = TokenCounter("glm-5.1:cloud")
+backend._tpm_tracker = TPMTracker(tpm_limit=100000, quiet=False)
+backend._retry = RetryHandler(triggers=["429", "connection"], max_retries=3)
+backend._trimmer = HistoryTrimmer(backend._token_counter, max_tokens=32768)
 ```
 
 ---
@@ -683,8 +868,9 @@ parse+execute) is the escape hatch.
 
 ```python
 AgenticSession(
-    client,                  # Ollama-compatible client (duck-typed)
-    model,                   # Model name string (e.g. "glm-5.1:cloud")
+    client=None,             # Ollama-compatible client (duck-typed) — auto-wrapped in OllamaBackend
+    model=None,              # Model name string (e.g. "glm-5.1:cloud")
+    backend=None,            # Explicit Backend instance (overrides client=)
     workdir=".",             # Working directory for file ops
     tools=True,              # Enable TOOL: protocol + built-in tools
     skills=False,            # Enable SKILL: protocol
@@ -700,6 +886,10 @@ AgenticSession(
 )
 ```
 
+Pass either `client=` (auto-wrapped in `OllamaBackend`) or `backend=`
+(explicit `OllamaBackend` / `OpenAIBackend`). If both are given, `backend=`
+takes precedence.
+
 **Methods:**
 - `.run(user_text)` → str: Run the feedback loop, return final prose
 - `.reset()`: Clear conversation history (keep system prompt), reset loop detection
@@ -708,6 +898,40 @@ AgenticSession(
 - `.history`: List of `{"role": ..., "content": ...}` messages
 - `.executor`: The `ActionExecutor` instance
 - `.system_prompt`: The active system prompt string
+- `.backend`: The `Backend` instance handling model calls
+
+### Backend Classes
+
+```python
+from agentic_core.backends import Backend, OllamaBackend, OpenAIBackend
+
+# OllamaBackend — zero middleware, thin wrapper around duck-typed client
+OllamaBackend(client, model, temperature=0.0)
+
+# OpenAIBackend — auto-configures middleware based on tpm_limit
+OpenAIBackend(
+    base_url,              # e.g. "http://localhost:11434" (/v1 appended automatically)
+    api_key,               # API key string
+    model,                 # model name
+    ctx_size=8192,         # context window size (for trimming budget)
+    temperature=0.0,        # model temperature
+    thinking=False,        # whether backend supports thinking tokens
+    tpm_limit=None,        # TPM limit (activates full middleware bundle)
+    max_context=None,      # trim budget cap when tpm_limit is set (default 16384)
+    quiet=False,            # suppress TPM/retry status messages
+)
+```
+
+### Middleware Components
+
+```python
+from agentic_core.backends import TokenCounter, TPMTracker, RetryHandler, HistoryTrimmer
+
+TokenCounter(model, per_message_overhead=4)   # tiktoken with char/4 fallback
+TPMTracker(tpm_limit, quiet=False)            # rolling 60s window
+RetryHandler(triggers=None, initial_wait=20, max_wait=60, max_retries=3, quiet=False)
+HistoryTrimmer(token_counter, max_tokens, reserve_output=2048)
+```
 
 ### Tool Base Class
 
@@ -922,7 +1146,7 @@ auto-approve everything.
 
 ```
 agentic_core/
-├── __init__.py          # Public API: AgenticSession, parse_actions, build_system_prompt
+├── __init__.py          # Public API: AgenticSession, backends, parse_actions, build_system_prompt
 ├── constants.py         # Limits, safety lists, ANSI colors, platform info
 ├── parser.py            # Block extraction engine (protocol parser)
 ├── system_prompt.py     # Modular system prompt builder
@@ -930,6 +1154,7 @@ agentic_core/
 ├── safety.py            # CommandSafety mixin: blocked/warning/safe classification
 ├── file_ops.py          # FileOperations mixin: WRITE/EDIT/FILE handlers
 ├── utils.py             # Shared utilities: agent_print, tool_print, _truncate
+├── backends.py          # Backend ABC + OllamaBackend + OpenAIBackend + middleware
 ├── matching.py          # Layered fuzzy/exact matching for EDIT
 ├── edit_utils.py        # Diff/summary helpers
 ├── exceptions.py        # AgenticInterrupted
@@ -957,15 +1182,35 @@ ActionExecutor(CommandSafety, FileOperations)
 └── ActionExecutor (actions.py)  → execute_actions, _should_approve, _do_run, _do_tool, _do_skill
 ```
 
+### Architecture: Backend Abstraction
+
+`AgenticSession` delegates model calls to a `Backend`, which orchestrates
+optional middleware (TPM, trimming, retry) around the transport layer:
+
+```
+AgenticSession
+  └── backend.call(messages, stream, on_chunk)
+        ├── TPMTracker.wait_if_needed()   [if configured]
+        ├── HistoryTrimmer.trim()         [if configured]
+        ├── RetryHandler.execute(_call)  [if configured]
+        ├── _call(messages, stream)       [transport]
+        │     ├── OllamaBackend  → client.chat()
+        │     └── OpenAIBackend  → openai.Client.chat.completions.create()
+        └── TPMTracker.record_usage()    [if configured]
+```
+
 ---
 
 ## Testing
 
-The project includes 124 tests across two test files:
+The project includes 157 tests across three test files:
 
 ```bash
 # Run all tests
-python -m pytest test_parser.py test_session.py -v
+python -m pytest test_parser.py test_session.py test_backends.py -v
+
+# Run only backend tests (OllamaBackend, OpenAIBackend, middleware)
+python -m pytest test_backends.py -v
 
 # Run only session-level tests (feedback loop, streaming, interruption)
 python -m pytest test_session.py -v
@@ -980,9 +1225,11 @@ python -m pytest test_parser.py -v
 |------|-------|-------|
 | `test_parser.py` | 103 | Parser (WRITE/EDIT/FILE/RUN/TOOL/SKILL), matching, edit utils, action executor safety |
 | `test_session.py` | 21 | Feedback loop, streaming, interruption handling, system prompt |
+| `test_backends.py` | 33 | OllamaBackend, OpenAIBackend, TokenCounter, TPMTracker, RetryHandler, HistoryTrimmer, Backend.call() orchestration |
 
-The session tests use mock clients (`MockClient`, `InterruptingClient`)
-that simulate Ollama API responses — no real Ollama server required.
+The session and backend tests use mock clients (`MockClient`,
+`InterruptingClient`, `MockOllamaClient`, `MockOpenAIClient`) that
+simulate API responses — no real Ollama or OpenAI server required.
 
 ---
 

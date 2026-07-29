@@ -9,6 +9,7 @@ from .constants import (
 )
 from .parser import parse_actions, extract_text_outside_blocks
 from .actions import ActionExecutor, agent_print
+from .backends import OllamaBackend, Backend
 from .system_prompt import build_system_prompt
 from .exceptions import AgenticInterrupted
 
@@ -41,18 +42,27 @@ class AgenticSession:
         on_chunk: Callback(chunk_text) called during streaming for real-time display.
     """
 
-    def __init__(self, client, model, workdir=".", tools=True, skills=False,
+    def __init__(self, client=None, model=None, workdir=".", tools=True, skills=False,
                  system_prompt=None, name="uhu", confirm_callback=None,
                  auto_approve_safe=False, stream=True, temperature=None,
                  max_feedback_rounds=None, config_filename="agentic-core.json",
-                 on_chunk=None):
-        self.client = client
+                 on_chunk=None, backend=None):
+        self.temperature = temperature if temperature is not None else MODEL_TEMPERATURE
+
+        # Backend: explicit backend, or auto-wrap client in OllamaBackend
+        if backend is not None:
+            self.backend = backend
+        elif client is not None:
+            self.backend = OllamaBackend(client, model, self.temperature)
+        else:
+            raise ValueError("Either client= or backend= is required")
+
+        self.client = client  # kept for backward compat
         self.model = model
         self.workdir = workdir
         self.tools = tools
         self.skills = skills
         self.stream = stream
-        self.temperature = temperature if temperature is not None else MODEL_TEMPERATURE
         self.on_chunk = on_chunk
         self.max_feedback_rounds = max_feedback_rounds or MAX_FEEDBACK_ROUNDS
 
@@ -180,26 +190,22 @@ class AgenticSession:
         Raises AgenticInterrupted on Ctrl+C with partial text collected so far.
         """
         chunks = []
+
+        def collector(text):
+            chunks.append(text)
+            if self.on_chunk:
+                self.on_chunk(text)
+            else:
+                sys.stdout.write(text)
+                sys.stdout.flush()
+
         try:
-            response = self.client.chat(
-                model=self.model,
-                messages=self.history,
-                stream=True,
-                options={"temperature": self.temperature},
+            text, _ = self.backend.call(
+                self.history, stream=True, on_chunk=collector
             )
-            for chunk in response:
-                text = ""
-                if isinstance(chunk, dict):
-                    text = chunk.get("message", {}).get("content", "")
-                elif hasattr(chunk, "message"):
-                    text = chunk.message.content
-                if text:
-                    chunks.append(text)
-                    if self.on_chunk:
-                        self.on_chunk(text)
-                    else:
-                        sys.stdout.write(text)
-                        sys.stdout.flush()
+            if not self.on_chunk:
+                print()  # newline after streaming
+            return text
         except KeyboardInterrupt:
             partial = "".join(chunks)
             if not self.on_chunk:
@@ -211,10 +217,7 @@ class AgenticSession:
                 self.on_chunk(error_msg)
             else:
                 print(error_msg)
-            chunks.append(error_msg)
-        if not self.on_chunk:
-            print()  # newline after streaming
-        return "".join(chunks)
+            return error_msg
 
     def _call_model_nonstream(self):
         """Get the full model response without streaming.
@@ -222,15 +225,8 @@ class AgenticSession:
         Raises AgenticInterrupted on Ctrl+C.
         """
         try:
-            response = self.client.chat(
-                model=self.model,
-                messages=self.history,
-                stream=False,
-                options={"temperature": self.temperature},
-            )
-            if isinstance(response, dict):
-                return response.get("message", {}).get("content", "")
-            return response.message.content
+            text, _ = self.backend.call(self.history, stream=False)
+            return text
         except KeyboardInterrupt:
             raise AgenticInterrupted("", phase="streaming")
         except Exception as e:
