@@ -72,9 +72,16 @@ def _search_lines_fuzzy(haystack, needle, threshold=0.8):
 
 
 def _lines_to_char_pos(lines, start_line, end_line):
-    """Convert (start_line, end_line) to char positions in the original content."""
+    """Convert (start_line, end_line) to char positions in the original content.
+
+    end_char stops BEFORE the last matched line's trailing newline: that
+    newline separates the matched region from the following line and
+    belongs to the file structure, not the match. Including it made every
+    replacement not ending in a blank line glue itself to the next line,
+    silently eating blank lines after edited regions.
+    """
     start_char = sum(len(l) + 1 for l in lines[:start_line])
-    end_char = start_char + sum(len(l) + 1 for l in lines[start_line:end_line])
+    end_char = start_char + sum(len(l) + 1 for l in lines[start_line:end_line]) - 1
     return (start_char, end_char)
 
 
@@ -112,10 +119,12 @@ def find_match_in_content(file_content, search_text):
         result = matcher(file_lines, search_lines)
         if result:
             start_line, end_line = result
-            # Convert line positions to char positions in the ORIGINAL content
-            # (not normalized — so replacement works on the actual file)
+            # Positions must be computed on the ORIGINAL content's lines
+            # (CRLF '\r' chars count toward line lengths) — the splice in
+            # _do_edit operates on the original text, not the normalized
+            # copy. Line indices align 1:1 between the two.
             start_char, end_char = _lines_to_char_pos(
-                normalized_content.split('\n'), start_line, end_line
+                file_content.split('\n'), start_line, end_line
             )
             return (start_char, end_char, quality)
 
