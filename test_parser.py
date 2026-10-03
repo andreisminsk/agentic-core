@@ -556,6 +556,60 @@ class TestMatching:
         result = find_match_in_content(content, "")
         assert result is None
 
+    # ── partial-line searches (substring fallback layer) ──────────────
+    # Regression: the matcher was line-anchored — every search line had
+    # to equal a COMPLETE file line, so partial-line searches (prefix/
+    # suffix/middle of a line) never matched, while replace_in_file
+    # (plain substring) matched the identical string. The substring
+    # layer restores parity; tried before fuzzy.
+
+    def test_partial_line_prefix(self):
+        content = "## Tasks — in focus\n- [ ] item one\n"
+        result = find_match_in_content(content, "## Tasks")
+        assert result is not None
+        assert result[2] == "substring"
+        start, end, _ = result
+        assert content[start:end] == "## Tasks"
+
+    def test_partial_line_suffix(self):
+        content = "Next: draft video script + LinkedIn post text\n"
+        result = find_match_in_content(content, "LinkedIn post text")
+        assert result is not None
+        assert result[2] == "substring"
+        start, end, _ = result
+        assert content[start:end] == "LinkedIn post text"
+
+    def test_partial_line_middle(self):
+        content = "- [ ] Decide on COI workflow with Employer\n"
+        result = find_match_in_content(content, "COI workflow")
+        assert result is not None
+        assert result[2] == "substring"
+        start, end, _ = result
+        assert content[start:end] == "COI workflow"
+
+    def test_partial_multiline_search(self):
+        content = "## Tasks — in focus\n- [ ] Decide on COI workflow\n"
+        search = "## Tasks — in focus\n- [ ] Decide"
+        result = find_match_in_content(content, search)
+        assert result is not None
+        start, end, _ = result
+        assert content[start:end] == search
+
+    def test_full_line_still_exact(self):
+        # The substring layer must not shadow the line matchers —
+        # complete-line searches keep their 'exact' quality.
+        content = "aaa\nbbb\nccc\n"
+        result = find_match_in_content(content, "bbb")
+        assert result is not None
+        assert result[2] == "exact"
+
+    def test_crlf_search_in_lf_file(self):
+        content = "## Tasks — in focus\n- [ ] Decide on COI workflow\n"
+        result = find_match_in_content(content, "focus\r\n- [ ] Decide")
+        assert result is not None
+        start, end, _ = result
+        assert content[start:end] == "focus\n- [ ] Decide"
+
     def test_match_returns_correct_positions(self):
         content = "aaa\nbbb\nccc\n"
         result = find_match_in_content(content, "bbb")

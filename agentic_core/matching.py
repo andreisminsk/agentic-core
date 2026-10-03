@@ -1,7 +1,11 @@
-"""Fuzzy and exact line-based search/match for EDIT operations.
+"""Fuzzy, exact, and substring search/match for EDIT operations.
 
 Adapted from ollama-chat-agentic — layered matching with CRLF normalization.
 Returns char positions for direct string replacement in actions.py.
+
+Layers: exact lines → whitespace-normalized lines → dedented lines →
+plain substring (partial-line searches, parity with replace_in_file) →
+fuzzy whole-line windows.
 """
 
 import difflib
@@ -109,12 +113,13 @@ def find_match_in_content(file_content, search_text):
     if not search_lines:
         return None
 
-    # Try each matching strategy in order of precision
+    # Line-anchored strategies in order of precision. All of them
+    # require the search to span COMPLETE lines — a partial-line
+    # search (prefix/suffix/middle of a line) never matches here.
     for matcher, quality in [
         (_search_lines_exact, 'exact'),
         (_search_lines_stripped, 'whitespace'),
         (_search_lines_dedented, 'dedented'),
-        (_search_lines_fuzzy, 'fuzzy'),
     ]:
         result = matcher(file_lines, search_lines)
         if result:
@@ -127,5 +132,32 @@ def find_match_in_content(file_content, search_text):
                 file_content.split('\n'), start_line, end_line
             )
             return (start_char, end_char, quality)
+
+    # Substring fallback: parity with replace_in_file — the search may
+    # span PARTIAL lines (prefix/suffix/middle of a line), which the
+    # line matchers above structurally cannot find. Tried before fuzzy:
+    # exact text presence is strictly more precise than a 0.8-ratio
+    # whole-line window. Positions map directly onto the ORIGINAL
+    # content (find() runs on it), so the splice in _do_edit is exact.
+    # The line-ending variants cover an LF search into a CRLF file and
+    # vice versa.
+    for variant in (
+        search_text,
+        normalized_search,
+        normalized_search.replace('\n', '\r\n'),
+    ):
+        if not variant:
+            continue
+        idx = file_content.find(variant)
+        if idx != -1:
+            return (idx, idx + len(variant), 'substring')
+
+    result = _search_lines_fuzzy(file_lines, search_lines)
+    if result:
+        start_line, end_line = result
+        start_char, end_char = _lines_to_char_pos(
+            file_content.split('\n'), start_line, end_line
+        )
+        return (start_char, end_char, 'fuzzy')
 
     return None
