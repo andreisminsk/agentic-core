@@ -42,7 +42,7 @@ def main():
 
     session = AgenticSession(
         client=client,
-        model="glm-5.1:cloud",
+        model="glm-5.3-flash:cloud",
         workdir=".",
         tools=True,
         skills=True,
