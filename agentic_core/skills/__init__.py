@@ -1,6 +1,7 @@
 """Skill registry and base classes."""
 
 from .base import Skill, PromptOnlySkill
+from .markdown_skill import MarkdownSkill, load_skills_from_dir, parse_skill_md
 
 _registry = {}
 
@@ -41,10 +42,18 @@ def skills_system_prompt(enabled_names=None):
         "Available skills:",
         "",
     ]
+    # Lazy loading: the prompt carries only name + description +
+    # triggers. Full instructions return as the observation on
+    # invocation — prompt cost stays flat as the skill library grows.
     for s in skills:
-        parts.append(s.system_prompt)
+        trigger_line = ""
+        if getattr(s, "triggers", None):
+            trigger_line = f"\nTriggers: {', '.join(s.triggers)}"
+        parts.append(f"**{s.name}** — {s.description}{trigger_line}")
         parts.append("")
     return "\n".join(parts)
 
 
-__all__ = ["Skill", "PromptOnlySkill", "register", "get", "all_skills", "skills_system_prompt"]
+__all__ = ["Skill", "PromptOnlySkill", "MarkdownSkill", "register", "get",
+           "all_skills", "skills_system_prompt", "load_skills_from_dir",
+           "parse_skill_md"]

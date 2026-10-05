@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 from .constants import (
     MAX_OBSERVATION_CHARS, MAX_READ_OBSERVATION_CHARS,
@@ -31,11 +32,21 @@ class ActionExecutor(CommandSafety, FileOperations):
     }
 
     def __init__(self, workdir=".", confirm_callback=None, auto_approve_safe=False,
-                 config_filename="agentic-core.json"):
+                 config_filename="agentic-core.json", run_timeout=120,
+                 stop_check=None):
         self.workdir = os.path.abspath(workdir)
         self.confirm_callback = confirm_callback or self._default_confirm
         self.auto_approve_safe = auto_approve_safe
         self.config_filename = config_filename
+        # RUN command timeout (seconds). Hardcoded 120 was too tight for
+        # builds, test suites, and long batch jobs — hosts can raise it.
+        self.run_timeout = max(int(run_timeout or 0), 1)
+        # Optional callable () -> bool, polled every 0.5s during RUN
+        # execution. When it returns True the process TREE is killed and
+        # KeyboardInterrupt is raised (the session converts it to
+        # AgenticInterrupted — the same path as Ctrl+C). Hosts wire a
+        # stop event; None = today's blocking behavior.
+        self.stop_check = stop_check
         # Session-level auto-approval state (reset per session)
         self.auto_all = False
         self.auto_writes = set()       # paths auto-approved this session
@@ -355,6 +366,53 @@ class ActionExecutor(CommandSafety, FileOperations):
             return self._do_skill(action)
         return f"[Unknown action type: {atype}]"
 
+    @staticmethod
+    def _kill_tree(proc) -> None:
+        """Kill a process and its children.
+
+        shell=True spawns cmd.exe/bash → children; killing only the
+        shell orphans them. Windows: taskkill /F /T; POSIX: killpg on
+        the child's own session group (start_new_session=True).
+        """
+        import signal
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True, timeout=10,
+                )
+            else:
+                import os
+                os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _drain_after_kill(proc, timeout=2.0):
+        """Bounded post-kill cleanup. Two verified Windows traps when an
+        orphaned grandchild still holds the pipe write-handles (e.g.
+        `start "" cmd` opens a terminal that inherits them):
+        1. communicate(timeout) re-enters _communicate and JOINS blocked
+           reader threads — the timeout is NOT honored on that path
+           (observed: 28s hang with timeout=2).
+        2. stream.close() blocks on the buffer lock held by a stuck
+           reader thread.
+        So: touch neither readers nor streams. wait() on the process
+        only (the shell is dead after the tree kill), abandon the pipes
+        — reader threads are daemons and die with the orphan's EOF.
+        Returns (stdout, stderr) — possibly empty."""
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return b"", b""
+
     def _do_run(self, action):
         cmd = action["code"]
         lang = action.get("lang", "bash")
@@ -382,12 +440,45 @@ class ActionExecutor(CommandSafety, FileOperations):
 
         agent_print(f"[RUN: {cmd[:100]}]")
         try:
-            # Use binary mode and decode manually to avoid UnicodeDecodeError
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True,
-                timeout=120, cwd=self.workdir,
+            # Stop-aware execution: Popen + poll loop instead of a single
+            # blocking subprocess.run. stop_check (optional host-wired
+            # callable) is polled every 0.5s; on stop the process tree is
+            # killed and KeyboardInterrupt is raised — the session converts
+            # it to AgenticInterrupted, exactly like Ctrl+C. Without
+            # stop_check, behavior is unchanged (blocking until exit or
+            # run_timeout).
+            popen_kwargs = dict(
+                shell=True, cwd=self.workdir,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 executable=None if sys.platform == "win32" else "/bin/bash",
             )
+            if sys.platform != "win32":
+                # Own process group — killpg can never touch the host's.
+                popen_kwargs["start_new_session"] = True
+            proc = subprocess.Popen(cmd, **popen_kwargs)
+            deadline = time.monotonic() + self.run_timeout
+            timed_out = False
+            while True:
+                try:
+                    out_bytes, err_bytes = proc.communicate(timeout=0.5)
+                    break
+                except subprocess.TimeoutExpired:
+                    if self.stop_check is not None and self.stop_check():
+                        self._kill_tree(proc)
+                        self._drain_after_kill(proc)
+                        raise KeyboardInterrupt()
+                    if time.monotonic() > deadline:
+                        timed_out = True
+                        self._kill_tree(proc)
+                        out_bytes, err_bytes = self._drain_after_kill(proc)
+                        break
+            result = subprocess.CompletedProcess(
+                args=cmd, returncode=proc.returncode,
+                stdout=out_bytes, stderr=err_bytes,
+            )
+            if timed_out:
+                return (f"Error: command timed out after "
+                        f"{self.run_timeout}s: {cmd[:80]}")
             # Decode output with fallback for OEM codepages
             try:
                 output = result.stdout.decode('utf-8')
@@ -418,8 +509,8 @@ class ActionExecutor(CommandSafety, FileOperations):
                 output += f"\n[exit code: {result.returncode}]"
             tool_print(output[:MAX_CONSOLE_DISPLAY_CHARS])
             return output
-        except subprocess.TimeoutExpired:
-            return f"Error: command timed out after 120s: {cmd[:80]}"
+        except KeyboardInterrupt:
+            raise
         except Exception as e:
             return f"Error running command: {e}"
 
@@ -449,7 +540,12 @@ class ActionExecutor(CommandSafety, FileOperations):
             return f"Error parsing skill params for {name}: {json_err}"
         skill = get_skill(name)
         if skill is None:
-            return f"Error: unknown skill: {name}"
+            hint = ""
+            from .tools import get as get_tool
+            if get_tool(name) is not None:
+                hint = (f" ({name} is a TOOL — invoke it with a TOOL: block, "
+                        f"not SKILL:)")
+            return f"Error: unknown skill: {name}{hint}"
         try:
             result = skill.execute(params, workdir=self.workdir)
             tool_print(f"[SKILL {name}]: {str(result)[:MAX_CONSOLE_DISPLAY_CHARS]}")
