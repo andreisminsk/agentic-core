@@ -1,8 +1,8 @@
-# agentic_core
+# agentic-core
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests: 157](https://img.shields.io/badge/tests-157%20passed-brightgreen.svg)](#testing)
+[![Tests: 202](https://img.shields.io/badge/tests-202%20passed-brightgreen.svg)](#testing)
 [![Dependencies: 0](https://img.shields.io/badge/dependencies-0%20hard-blue.svg)](#dependencies)
 
 A minimalistic, reusable Python package that gives any LLM chat
@@ -10,6 +10,13 @@ application agentic capabilities — file reading/writing/editing, shell
 command execution, and extensible tool/skill workflows — through a
 text-based block protocol. Supports both Ollama and OpenAI-compatible
 APIs via a pluggable backend abstraction with optional TPM rate limiting.
+
+The project is originated from uhu, the minimalistic agentic coder (https://github.com/andreisminsk/uhu), by extracting its core and minimizing it to about 5K lines of code.
+
+> **Primary intention:** this project is created for **education and creativity** —
+> to show how an agentic LLM loop works under the hood and to serve as a
+> foundation for your own experiments, prototypes, and creative tools.
+> It is fully functional, but it is not a hardened production framework.
 
 ---
 
@@ -31,6 +38,7 @@ APIs via a pluggable backend abstraction with optional TPM rate limiting.
 - [Project Structure](#project-structure)
 - [Testing](#testing)
 - [License](#license)
+- [Disclaimer](#disclaimer)
 
 ---
 
@@ -45,7 +53,7 @@ into the conversation — a feedback loop that continues until the model
 produces a final text-only response.
 
 This pattern was extracted from the
-[`ollama-chat-agentic`](https://github.com/) project and distilled into
+the ollama-chat-agentic project and distilled into
 a standalone library with zero hard dependencies (Python stdlib only).
 The LLM client is injected via a backend abstraction — the core never
 imports `ollama` or `openai` directly. Two backends ship built-in:
@@ -54,7 +62,7 @@ optional TPM limiting, history trimming, and retry).
 
 ### Why Use It
 
-- **Embed agentic behavior** in any Ollama chat app with ~3 lines of code
+- **Embed agentic behavior** in any chat app with few lines of code
 - **Zero hard dependencies** — pure Python stdlib, cross-platform
 - **Extensible** — add custom tools and skills by subclassing
 - **Safe** — built-in command safety checks, blocked/warning lists,
@@ -64,7 +72,7 @@ optional TPM limiting, history trimming, and retry).
   markdown blocks, and edge cases from real LLM output
 - **Multi-backend** — Ollama and OpenAI-compatible APIs via pluggable
   backends, with optional TPM rate limiting and context trimming
-- **Comprehensive test suite** — 157 tests covering parser, executor,
+- **Comprehensive test suite** — 202 tests covering parser, executor,
   session loop, streaming, interruption, and backend middleware
 
 ---
@@ -100,7 +108,7 @@ project, or add it to your `PYTHONPATH`.
 For pip-based projects, you can also install from source:
 
 ```bash
-git clone https://github.com/yourusername/agentic-core.git
+git clone https://github.com/andreisminsk/agentic-core.git
 cd agentic-core
 pip install -e .  # if a setup.py/pyproject.toml is added
 ```
@@ -112,7 +120,7 @@ from agentic_core import AgenticSession
 from ollama import Client
 
 client = Client(host="http://localhost:11434")
-session = AgenticSession(client, model="glm-5.1:cloud", workdir=".")
+session = AgenticSession(client, model="glm-5.3-flash:cloud", workdir=".")
 
 response = session.run("Create a hello.py file that prints hello world")
 print(response)
@@ -123,7 +131,7 @@ print(response)
 ```python
 session = AgenticSession(
     client,
-    model="glm-5.1:cloud",
+    model="glm-5.3-flash:cloud",
     workdir=".",
     on_chunk=lambda chunk: print(chunk, end="", flush=True),
 )
@@ -142,7 +150,7 @@ from agentic_core.backends import OpenAIBackend
 backend = OpenAIBackend(
     base_url="http://localhost:11434",  # /v1 appended automatically
     api_key="ollama",
-    model="glm-5.1:cloud",
+    model="glm-5.3-flash:cloud",
     ctx_size=32768,
 )
 session = AgenticSession(backend=backend, workdir=".")
@@ -181,7 +189,7 @@ callback needed:
 ```python
 session = AgenticSession(
     client,
-    model="glm-5.1:cloud",
+    model="glm-5.3-flash:cloud",
     workdir=".",
     # auto_approve_safe=False is the default — prompts for WRITE/EDIT/RUN
 )
@@ -192,7 +200,7 @@ To auto-approve everything (autonomous/headless mode):
 ```python
 session = AgenticSession(
     client,
-    model="glm-5.1:cloud",
+    model="glm-5.3-flash:cloud",
     workdir=".",
     auto_approve_safe=True,
     confirm_callback=lambda atype, details: True,
@@ -211,7 +219,7 @@ def confirm(action_type, details):
 
 session = AgenticSession(
     client,
-    model="glm-5.1:cloud",
+    model="glm-5.3-flash:cloud",
     workdir=".",
     confirm_callback=confirm,
 )
@@ -258,7 +266,7 @@ from ollama import Client
 
 backend = OllamaBackend(
     client=Client(host="http://localhost:11434"),
-    model="glm-5.1:cloud",
+    model="glm-5.3-flash:cloud",
     temperature=0.0,
 )
 session = AgenticSession(backend=backend, workdir=".")
@@ -315,7 +323,7 @@ from agentic_core.backends import OpenAIBackend
 backend = OpenAIBackend(
     base_url="http://localhost:11434",
     api_key="ollama",
-    model="glm-5.1:cloud",
+    model="glm-5.3-flash:cloud",
     ctx_size=32768,
 )
 
@@ -346,8 +354,8 @@ backend via the `Backend` base class attributes:
 from agentic_core.backends import OllamaBackend, TokenCounter, TPMTracker, RetryHandler, HistoryTrimmer
 
 # Manually attach middleware to Ollama (advanced)
-backend = OllamaBackend(client, "glm-5.1:cloud")
-backend._token_counter = TokenCounter("glm-5.1:cloud")
+backend = OllamaBackend(client, "glm-5.3-flash:cloud")
+backend._token_counter = TokenCounter("glm-5.3-flash:cloud")
 backend._tpm_tracker = TPMTracker(tpm_limit=100000, quiet=False)
 backend._retry = RetryHandler(triggers=["429", "connection"], max_retries=3)
 backend._trimmer = HistoryTrimmer(backend._token_counter, max_tokens=32768)
@@ -427,7 +435,7 @@ from agentic_core import AgenticSession
 
 session = AgenticSession(
     client=my_client,       # any object with .chat(model=, messages=, stream=)
-    model="glm-5.1:cloud",
+    model="glm-5.3-flash:cloud",
     workdir=".",
 )
 response = session.run(user_input)
@@ -444,7 +452,7 @@ prompt = build_system_prompt(
     skills=True,
     extra_sections=["Custom rule: always respond in French."],
 )
-session = AgenticSession(client, model="glm-5.1:cloud", system_prompt=prompt)
+session = AgenticSession(client, model="glm-5.3-flash:cloud", system_prompt=prompt)
 ```
 
 ### Custom Tools
@@ -660,7 +668,7 @@ sessions = {}
 async def chat(session_id: str, message: str):
     if session_id not in sessions:
         sessions[session_id] = AgenticSession(
-            client, model="glm-5.1:cloud",
+            client, model="glm-5.3-flash:cloud",
             workdir=f"/tmp/sessions/{session_id}",
         )
     response = sessions[session_id].run(message)
@@ -701,9 +709,9 @@ agents.
 - Collects and synthesizes results
 
 ```python
-coder = AgenticSession(client, model="glm-5.1:cloud",
+coder = AgenticSession(client, model="glm-5.3-flash:cloud",
                        workdir="./workspace", tools=True)
-reviewer = AgenticSession(client, model="glm-5.1:cloud",
+reviewer = AgenticSession(client, model="glm-5.3-flash:cloud",
                           workdir="./workspace", tools=True)
 
 # Coder writes code
@@ -814,7 +822,7 @@ optionally inspect `session.history` for details.
 
 ```python
 def fix_file(path, error_msg):
-    session = AgenticSession(client, model="glm-5.1:cloud", workdir=".")
+    session = AgenticSession(client, model="glm-5.3-flash:cloud", workdir=".")
     return session.run(f"The file {path} has this error: {error_msg}. Fix it.")
 ```
 
@@ -939,7 +947,7 @@ parse+execute) is the escape hatch.
 ```python
 AgenticSession(
     client=None,             # Ollama-compatible client (duck-typed) — auto-wrapped in OllamaBackend
-    model=None,              # Model name string (e.g. "glm-5.1:cloud")
+    model=None,              # Model name string (e.g. "glm-5.3-flash:cloud")
     backend=None,            # Explicit Backend instance (overrides client=)
     workdir=".",             # Working directory for file ops
     tools=True,              # Enable TOOL: protocol + built-in tools
@@ -1041,7 +1049,7 @@ There are three levels of control over the system prompt:
 
 ```python
 session = AgenticSession(
-    client, model="glm-5.1:cloud",
+    client, model="glm-5.3-flash:cloud",
     system_prompt="You are a French coding assistant...",
 )
 ```
@@ -1064,7 +1072,7 @@ prompt = build_system_prompt(
     ],
     identity=None,          # replace base prompt, keep tools/skills rules
 )
-session = AgenticSession(client, model="glm-5.1:cloud", system_prompt=prompt)
+session = AgenticSession(client, model="glm-5.3-flash:cloud", system_prompt=prompt)
 ```
 
 **Level 3 — Default** (no args):
@@ -1127,7 +1135,7 @@ register(ImageAnalysisTool(model="llama3.2-vision:11b", base_url="http://localho
 register(ImageAnalysisTool(client=my_client, model="gemma4:31b-cloud"))
 
 # Option 3: Use the session's client
-session = AgenticSession(client, model="glm-5.1:cloud", ...)
+session = AgenticSession(client, model="glm-5.3-flash:cloud", ...)
 register(ImageAnalysisTool(client=session.client, model="gemma4:31b-cloud"))
 ```
 
@@ -1273,29 +1281,37 @@ AgenticSession
 
 ## Testing
 
-The project includes 157 tests across three test files:
+The project includes 202 tests across five test files:
 
 ```bash
 # Run all tests
-python -m pytest test_parser.py test_session.py test_backends.py -v
+python -m pytest tests/ -v
 
 # Run only backend tests (OllamaBackend, OpenAIBackend, middleware)
-python -m pytest test_backends.py -v
+python -m pytest tests/test_backends.py -v
 
 # Run only session-level tests (feedback loop, streaming, interruption)
-python -m pytest test_session.py -v
+python -m pytest tests/test_session.py -v
 
 # Run only parser/executor tests
-python -m pytest test_parser.py -v
+python -m pytest tests/test_parser.py -v
+
+# Run only MCP tests
+python -m pytest tests/test_mcp.py -v
+
+# Run only RUN stop/timeout tests
+python -m pytest tests/test_run_stop.py -v
 ```
 
 ### Test Coverage
 
 | File | Tests | Scope |
 |------|-------|-------|
-| `test_parser.py` | 103 | Parser (WRITE/EDIT/FILE/RUN/TOOL/SKILL), matching, edit utils, action executor safety |
+| `test_parser.py` | 109 | Parser (WRITE/EDIT/FILE/RUN/TOOL/SKILL), matching, edit utils, action executor safety |
 | `test_session.py` | 21 | Feedback loop, streaming, interruption handling, system prompt |
 | `test_backends.py` | 33 | OllamaBackend, OpenAIBackend, TokenCounter, TPMTracker, RetryHandler, HistoryTrimmer, Backend.call() orchestration |
+| `test_mcp.py` | 32 | MCP manager, transports, tool registration, auth tokens |
+| `test_run_stop.py` | 7 | RUN stop-check, process-tree kill, timeout behavior |
 
 The session and backend tests use mock clients (`MockClient`,
 `InterruptingClient`, `MockOllamaClient`, `MockOpenAIClient`) that
@@ -1303,6 +1319,33 @@ simulate API responses — no real Ollama or OpenAI server required.
 
 ---
 
+## Feedback
+
+We welcome feedback, bug reports, and suggestions:
+
+- **Telegram:** [@MartiAi_Feedback_bot](https://t.me/MartiAi_Feedback_bot)
+- **GitHub Issues:** [agentic-core/issues](https://github.com/andreisminsk/agentic-core/issues)
+
+
 ## License
 
-MIT
+Licensed under the [MIT License](LICENSE) — free for personal, academic, and
+commercial use, including use in commercial products. The only requirement
+is to keep the copyright notice and license text in copies of the software.
+
+Copyright (c) 2026 Andrei Suvorov
+
+## Disclaimer
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+This library executes LLM-generated shell commands and file operations.
+Always review actions before approving them, run the agent in a sandboxed
+or trusted environment, and never grant autonomous access to production
+systems or sensitive data.
