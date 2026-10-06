@@ -507,7 +507,7 @@ class ActionExecutor(CommandSafety, FileOperations):
                 output = f"[Command completed with exit code {result.returncode}]"
             else:
                 output += f"\n[exit code: {result.returncode}]"
-            tool_print(output[:MAX_CONSOLE_DISPLAY_CHARS])
+            tool_print(_truncate(output, MAX_CONSOLE_DISPLAY_CHARS))
             return output
         except KeyboardInterrupt:
             raise
@@ -526,7 +526,7 @@ class ActionExecutor(CommandSafety, FileOperations):
             return f"Error: unknown tool: {name}"
         try:
             result = tool.execute(params, workdir=self.workdir)
-            tool_print(f"[TOOL {name}]: {str(result)[:MAX_CONSOLE_DISPLAY_CHARS]}")
+            tool_print(_truncate(f"[TOOL {name}]: {str(result)}", MAX_CONSOLE_DISPLAY_CHARS))
             return f"[TOOL {name}]\n{result}"
         except Exception as e:
             return f"Error executing tool {name}: {e}"
@@ -548,7 +548,7 @@ class ActionExecutor(CommandSafety, FileOperations):
             return f"Error: unknown skill: {name}{hint}"
         try:
             result = skill.execute(params, workdir=self.workdir)
-            tool_print(f"[SKILL {name}]: {str(result)[:MAX_CONSOLE_DISPLAY_CHARS]}")
+            tool_print(_truncate(f"[SKILL {name}]: {str(result)}", MAX_CONSOLE_DISPLAY_CHARS))
             return f"[SKILL {name}]\n{result}"
         except Exception as e:
             return f"Error executing skill {name}: {e}"

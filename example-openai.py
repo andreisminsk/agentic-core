@@ -54,7 +54,7 @@ def main():
     # Defaults: local Ollama /v1 endpoint. Override with env vars for other providers.
     base_url = os.environ.get("OPENAI_BASE_URL", "http://localhost:11434")
     api_key = os.environ.get("OPENAI_API_KEY", os.environ.get("OLLAMA_API_KEY", "ollama"))
-    model = os.environ.get("OPENAI_MODEL", "glm-5.1:cloud")
+    model = os.environ.get("OPENAI_MODEL", "glm-5.3-flash:cloud")
 
     backend = OpenAIBackend(
         base_url=base_url,

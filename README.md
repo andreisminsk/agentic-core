@@ -490,6 +490,76 @@ class CodeReviewSkill(Skill):
 register_skill(CodeReviewSkill())
 ```
 
+### MCP (Model Context Protocol)
+
+`agentic_core.mcp` connects to external MCP tool servers, discovers
+their tools, and registers each as a first-class tool named
+`mcp_<server>_<tool>`. Three transports: **SSE** (url ending with
+`/sse`), **Streamable HTTP** (any other url), and **stdio**
+(`command` + `args` subprocess). `httpx` is optional — stdio works
+without it; HTTP transports raise a clear install hint.
+
+The manager is host-injected: you provide the config, optionally a
+confinement checker and an auth-token resolver.
+
+```python
+from agentic_core.mcp import MCPManager, MCPUsageTool
+
+mcp = MCPManager(
+    # REQUIRED: callable returning the mcpServers dict — read it
+    # from your own config source, fresh on every call
+    get_config=lambda: {
+        "context7": {
+            "url": "https://mcp.context7.com/mcp",
+            "auth_token": "...",          # or auth_token_env: "MY_TOKEN"
+            "timeout": 120,
+            "auto_approve": False,         # per-server confirmation opt-out
+        },
+        "filesystem": {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"],
+        },
+    },
+    # OPTIONAL: (path, workdir) -> error-string-or-None — when set,
+    # output-file saves (large text / binary results) are refused
+    # outside the allowed roots. Pass None for no confinement.
+    path_checker=my_check_path,
+    # OPTIONAL: env-file fallback for auth_token_env tokens
+    env_file="~/.myapp/.env",
+)
+
+# Lifecycle is the HOST's policy — connect when it makes sense:
+mcp.connect()                    # all enabled servers, in parallel
+mcp.connect("context7")          # one server
+mcp.sync()                       # drop removed/disabled; reconnect dead
+mcp.register_tools()             # into the agentic-core registry
+mcp.close_all()                  # shutdown
+```
+
+**Lazy activation (recommended).** MCP tools are registered but
+excluded from the system prompt (`tools_system_prompt` skips
+`mcp_*` names) — N servers × M tools cost nothing until used.
+Register the meta-tool and add one stub line to your prompt:
+
+```python
+from agentic_core.tools import register
+
+register(MCPUsageTool(mcp))       # serves full tool docs on demand
+
+# In your system prompt (extra_sections):
+# "MCP TOOLS AVAILABLE (not shown here): context7, filesystem.
+#  Invoke TOOL:mcp_usage to connect and see their full documentation."
+```
+
+When the user asks for MCP, the model calls `mcp_usage` — which
+connects on demand, returns the full generated docs as its
+observation, and the real tools become callable. One extra
+round-trip on first use; zero prompt cost otherwise.
+
+**Enablement gating.** `register_tools(enabled_check=name -> bool)`
+lets the host apply its own tool-enablement config to late-registered
+MCP tools (they bypass any boot-time filter otherwise).
+
 ### Custom Client (Non-Ollama)
 
 The core accepts any client object with a `.chat()` method matching the

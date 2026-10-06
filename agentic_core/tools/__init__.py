@@ -82,6 +82,12 @@ def tools_system_prompt(enabled_names=None):
         "",
     ]
     for t in tools:
+        # Lazy MCP activation: mcp_* tools stay REGISTERED (execution
+        # + enablement gating) but are excluded from the prompt — the
+        # mcp_usage meta-tool serves their docs on demand. Hosts
+        # without MCP are unaffected (no mcp_ names).
+        if t.name.startswith("mcp_") and t.name != "mcp_usage":
+            continue
         parts.append(t.system_prompt)
         parts.append("")
     return "\n".join(parts)
