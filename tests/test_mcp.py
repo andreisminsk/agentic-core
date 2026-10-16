@@ -9,6 +9,8 @@ import pytest
 
 import agentic_core.tools as tools_mod
 from agentic_core.mcp import (
+    MCPConnectionError,
+    MCPError,
     MCPManager,
     MCPTool,
     MCPUsageTool,
@@ -52,6 +54,25 @@ class FakeTransport:
 
     def close(self):
         self.closed = True
+
+
+class FlakyTransport(FakeTransport):
+    """Raises MCPConnectionError on the first call, then succeeds."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.reconnects = 0
+        self.calls = 0
+
+    def call_tool(self, tool_name, arguments):
+        self.calls += 1
+        if self.calls == 1:
+            raise MCPConnectionError("connection lost")
+        return self.call_result
+
+    def reconnect(self):
+        self.reconnects += 1
+        return {}
 
 
 def _tool_def(name="search", desc="Search things", props=None, required=None):
@@ -335,3 +356,92 @@ class TestLazyActivation:
             enabled_check=lambda name: name != "mcp_ctx_get")
         assert get_tool("mcp_ctx_search") is not None
         assert get_tool("mcp_ctx_get") is None      # gated
+
+
+# ── Reconnect & server-initiated messages (ported from uhu 1.18.1) ──────
+
+class TestReconnectAndServerMessages:
+    def test_connection_error_reconnects_once(self, tmp_path):
+        t = FlakyTransport()
+        tool = MCPTool(name="mcp_s_search", description="d",
+                       input_schema={}, server_name="s", transport=t)
+        assert tool.execute({"q": "x"}, str(tmp_path)) == "ok"
+        assert t.reconnects == 1
+        assert t.calls == 2
+
+    def test_mcp_error_not_retried(self, tmp_path):
+        class ServerError(FakeTransport):
+            def call_tool(self, tool_name, arguments):
+                raise MCPError("MCP error 42: bad arguments")
+
+            def reconnect(self):
+                raise AssertionError("must not reconnect on MCPError")
+
+        tool = MCPTool(name="mcp_s_search", description="d",
+                       input_schema={}, server_name="s",
+                       transport=ServerError())
+        assert "[MCP tool error:" in tool.execute({}, str(tmp_path))
+
+    def test_reconnect_failure_reported(self, tmp_path):
+        class Dead(FakeTransport):
+            def call_tool(self, tool_name, arguments):
+                raise MCPConnectionError("gone")
+
+            def reconnect(self):
+                raise MCPConnectionError("nope")
+
+        tool = MCPTool(name="mcp_s_search", description="d",
+                       input_schema={}, server_name="s", transport=Dead())
+        r = tool.execute({}, str(tmp_path))
+        assert "[MCP tool error:" in r
+        assert "reconnect failed" in r
+
+    def test_stdio_ping_answered(self):
+        from agentic_core.mcp.transports import StdioTransport
+        t = StdioTransport(command="x", name="p")
+        sent = []
+        t._write_line = lambda m: sent.append(json.loads(m))
+        assert t._handle_server_message({"method": "ping", "id": 7}) is True
+        assert sent == [{"jsonrpc": "2.0", "id": 7, "result": {}}]
+
+    def test_stdio_unknown_request_gets_32601(self):
+        from agentic_core.mcp.transports import StdioTransport
+        t = StdioTransport(command="x", name="p")
+        sent = []
+        t._write_line = lambda m: sent.append(json.loads(m))
+        assert t._handle_server_message(
+            {"method": "sampling/createMessage", "id": 3}) is True
+        assert sent[0]["error"]["code"] == -32601
+
+    def test_stdio_notification_ignored(self):
+        from agentic_core.mcp.transports import StdioTransport
+        t = StdioTransport(command="x", name="p")
+        sent = []
+        t._write_line = lambda m: sent.append(json.loads(m))
+        assert t._handle_server_message(
+            {"method": "notifications/progress"}) is True
+        assert sent == []
+
+    def test_stdio_client_response_not_swallowed(self):
+        from agentic_core.mcp.transports import StdioTransport
+        t = StdioTransport(command="x", name="p")
+        assert t._handle_server_message({"result": {}}) is False
+
+    def test_parse_sse_skips_server_messages(self):
+        from agentic_core.mcp.transports import StreamableHTTPTransport
+        text = ('data: {"jsonrpc": "2.0", "method": "notifications/x"}\n'
+                'data: {"jsonrpc": "2.0", "id": 1, "result": {"ok": true}}\n')
+        assert StreamableHTTPTransport._parse_sse(text) == {"ok": True}
+
+    def test_resolve_command(self):
+        from agentic_core.mcp.transports import StdioTransport
+        t = StdioTransport(command="C:/tools/srv.exe", name="p")
+        assert t._resolve_command() == "C:/tools/srv.exe"  # absolute kept
+        t2 = StdioTransport(command="no-such-cmd-xyz", name="p")
+        assert t2._resolve_command() == "no-such-cmd-xyz"  # which() miss
+
+    def test_stdio_connect_failure_is_connection_error(self):
+        from agentic_core.mcp.transports import StdioTransport
+        t = StdioTransport(command="no-such-cmd-xyz", name="p")
+        with pytest.raises(MCPConnectionError):
+            t.connect()

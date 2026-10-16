@@ -18,5 +18,7 @@ HTTP transports raise a clear install hint.
 """
 
 from .manager import MCPManager, MCPTool, MCPUsageTool, _prefixed_name
+from .transports import MCPConnectionError, MCPError
 
-__all__ = ["MCPManager", "MCPTool", "MCPUsageTool", "_prefixed_name"]
+__all__ = ["MCPManager", "MCPTool", "MCPUsageTool",
+           "MCPError", "MCPConnectionError", "_prefixed_name"]

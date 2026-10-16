@@ -10,6 +10,8 @@ import subprocess
 import threading
 import uuid
 
+from .transports import MCPConnectionError, MCPError
+
 logger = logging.getLogger(__name__)
 
 MAX_TOOLS_PER_SERVER = 20
@@ -106,10 +108,27 @@ class MCPTool:
         except OSError as e:
             return None, str(e)
 
+    def _invoke_with_reconnect(self, params):
+        """Call the tool; on connection loss, reconnect once and retry.
+
+        JSON-RPC errors from the server (MCPError) are not retried — the
+        transport is alive, the tool call itself simply failed.
+        """
+        try:
+            return self.transport.call_tool(
+                tool_name=self.original_name, arguments=params or {})
+        except MCPConnectionError as e:
+            try:
+                self.transport.reconnect()
+            except Exception as re_err:
+                raise MCPConnectionError(
+                    f"connection lost ({e}); reconnect failed: {re_err}")
+            return self.transport.call_tool(
+                tool_name=self.original_name, arguments=params or {})
+
     def execute(self, params, workdir=None, session=None):
         try:
-            result = self.transport.call_tool(
-                tool_name=self.original_name, arguments=params or {})
+            result = self._invoke_with_reconnect(params)
             return self._format_result(result, workdir)
         except Exception as e:
             return f"[MCP tool error: {e}]"
