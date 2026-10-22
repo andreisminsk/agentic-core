@@ -528,6 +528,16 @@ class ActionExecutor(CommandSafety, FileOperations):
             result = tool.execute(params, workdir=self.workdir)
             tool_print(_truncate(f"[TOOL {name}]: {str(result)}", MAX_CONSOLE_DISPLAY_CHARS))
             return f"[TOOL {name}]\n{result}"
+        except SystemExit as e:
+            # Defense-in-depth: tools that exec user/model code may trigger
+            # sys.exit() inside the executed code. SystemExit is a
+            # BaseException — without this handler it would escape and
+            # terminate the whole agent process (or the run's worker thread).
+            msg = (f"[TOOL FAILED: {name} — SystemExit({e.code}) raised inside "
+                   f"tool (executed code called sys.exit). Converted to "
+                   f"failure, session continues.]")
+            agent_print(msg + "\n")
+            return msg
         except Exception as e:
             return f"Error executing tool {name}: {e}"
 
@@ -550,5 +560,10 @@ class ActionExecutor(CommandSafety, FileOperations):
             result = skill.execute(params, workdir=self.workdir)
             tool_print(_truncate(f"[SKILL {name}]: {str(result)}", MAX_CONSOLE_DISPLAY_CHARS))
             return f"[SKILL {name}]\n{result}"
+        except SystemExit as e:
+            msg = (f"[SKILL FAILED: {name} — SystemExit({e.code}) raised "
+                   f"inside skill, session continues]")
+            agent_print(msg + "\n")
+            return msg
         except Exception as e:
             return f"Error executing skill {name}: {e}"

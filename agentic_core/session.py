@@ -234,10 +234,20 @@ class AgenticSession:
 
     @staticmethod
     def _action_signature(actions):
-        """Create a hashable signature of actions for loop detection."""
+        """Create a hashable signature of actions for loop detection.
+
+        Includes a params hash so the same tool called with different
+        args is NOT misdetected as a looping action (upstream 65c5579)."""
+        import json as _json
         parts = []
         for a in actions:
-            parts.append(f"{a['type']}:{a.get('path', '')}:{a.get('code', '')[:200]}")
+            try:
+                params_hash = _json.dumps(a.get("params", {}),
+                                          sort_keys=True, default=str)[:200]
+            except (TypeError, ValueError):
+                params_hash = str(a.get("params", ""))[:200]
+            parts.append(f"{a['type']}:{a.get('path', '')}:"
+                         f"{a.get('code', '')[:200]}:{params_hash}")
         return "|".join(parts)
 
     def reset(self):
