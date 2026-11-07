@@ -1,5 +1,6 @@
 """AgenticSession: the feedback loop that ties parser, actions, and model together."""
 
+import json
 import sys
 from datetime import date
 
@@ -99,6 +100,10 @@ class AgenticSession:
         self._last_action_signature = None
         self._repeat_count = 0
 
+        # Native tool_calls snapshot from the last model call — consumed
+        # exactly once per action round by run() (never leaks between rounds).
+        self._pending_native = None
+
     def run(self, user_text):
         """Send user text and run the agentic feedback loop.
 
@@ -116,8 +121,14 @@ class AgenticSession:
                 # Call the model
                 response_text = self._call_model()
 
-                # Parse actions
+                # Parse actions, then merge any native tool_calls the backend
+                # captured (native-calling models express actions via the
+                # structured tool_calls channel instead of text blocks).
+                pending = self._take_pending_native()
                 actions = parse_actions(response_text)
+                native_actions = self._native_to_actions(pending)
+                if native_actions:
+                    actions = (actions or []) + native_actions
 
                 if not actions:
                     # No actions — this is the final response
@@ -139,8 +150,13 @@ class AgenticSession:
                     self._last_action_signature = sig
                     self._repeat_count = 0
 
-                # Store assistant response
-                self.history.append({"role": "assistant", "content": response_text})
+                # Store assistant response; raw native tool_calls stay attached
+                # so tool-role results can immediately follow on the wire
+                # (some servers 400 when other roles interleave).
+                entry = {"role": "assistant", "content": response_text}
+                if pending and pending.get("raw"):
+                    entry["tool_calls"] = pending["raw"]
+                self.history.append(entry)
 
                 # Execute actions
                 observations = self.executor.execute_actions(actions)
@@ -149,9 +165,9 @@ class AgenticSession:
                     # No observations (all skipped) — nudge the model
                     observations = ["[All actions were skipped. Please try a different approach.]"]
 
-                # Feed observations back as a user message
-                obs_text = "\n\n".join(observations)
-                self.history.append({"role": "user", "content": obs_text})
+                # Feed observations back: per-call tool-role messages when the
+                # round used native tool_calls, else a single user message.
+                self._append_observations(observations, len(native_actions))
 
                 final_text = response_text
 
@@ -179,10 +195,79 @@ class AgenticSession:
             raise
 
     def _call_model(self):
-        """Call the model and return the full response text."""
+        """Call the model and return the full response text.
+
+        Also snapshots native tool_calls (if the backend captured any) into
+        self._pending_native for the caller to merge into parsed actions."""
         if self.stream:
-            return self._call_model_stream()
-        return self._call_model_nonstream()
+            text = self._call_model_stream()
+        else:
+            text = self._call_model_nonstream()
+        raw = [dict(c) for c in (getattr(self.backend, "last_raw_tool_calls", None) or [])]
+        norm = list(getattr(self.backend, "last_tool_calls", None) or [])
+        self._pending_native = {"raw": raw, "norm": norm} if norm else None
+        if norm and not (text or "").strip():
+            # Model produced only structured tool_calls — render them for
+            # visibility (streaming showed nothing on screen).
+            self._render_native_display(norm)
+        return text
+
+    def _take_pending_native(self):
+        """Return (and clear) the pending native tool_calls snapshot."""
+        pending = getattr(self, "_pending_native", None)
+        self._pending_native = None
+        return pending
+
+    @staticmethod
+    def _native_to_actions(pending):
+        """Convert normalized native tool_calls to executor action dicts."""
+        if not pending:
+            return []
+        return [{"type": "tool", "path": tc["name"], "code": "",
+                 "params": tc.get("params", {})}
+                for tc in pending.get("norm", [])]
+
+    @staticmethod
+    def _render_native_display(norm_calls):
+        """Print a compact display for native tool_calls with no text content."""
+        for i, tc in enumerate(norm_calls, 1):
+            try:
+                args_json = json.dumps(tc.get("params", {}), default=str)
+            except (TypeError, ValueError):
+                args_json = str(tc.get("params", {}))
+            preview = args_json[:400] + ("..." if len(args_json) > 400 else "")
+            agent_print(f"[native tool_call {i}/{len(norm_calls)}: {tc['name']}]\n"
+                        f"{preview}\n")
+
+    def _append_observations(self, observations, native_count=0):
+        """Append observations to history.
+
+        With native tool_calls this round, the observation for each call is
+        attached as a tool-role message immediately after the assistant
+        entry (wire requirement). Native actions are appended last, so their
+        observations are the last entries; any remaining observations
+        (text-block actions) go back as a single user message."""
+        last = self.history[-1] if self.history else None
+        if native_count and isinstance(last, dict) and last.get("tool_calls"):
+            if len(observations) >= native_count:
+                native_obs = observations[-native_count:]
+                rest = observations[:-native_count]
+            else:
+                native_obs = (["[skipped]"] * (native_count - len(observations))
+                              + observations)
+                rest = []
+            for i, call in enumerate(last["tool_calls"]):
+                msg = {"role": "tool",
+                       "content": native_obs[i] if i < len(native_obs) else "[skipped]",
+                       "name": (call.get("function") or {}).get("name", "")}
+                if call.get("id"):
+                    msg["tool_call_id"] = call["id"]
+                self.history.append(msg)
+            if rest:
+                self.history.append({"role": "user", "content": "\n\n".join(rest)})
+            return
+        obs_text = "\n\n".join(observations)
+        self.history.append({"role": "user", "content": obs_text})
 
     def _call_model_stream(self):
         """Stream the model response, calling on_chunk for each piece.
@@ -255,3 +340,4 @@ class AgenticSession:
         self.history = [self.history[0]]
         self._last_action_signature = None
         self._repeat_count = 0
+        self._pending_native = None

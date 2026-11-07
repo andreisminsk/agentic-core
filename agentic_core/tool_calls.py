@@ -1,0 +1,151 @@
+"""Shared normalizer for native LLM tool_calls.
+
+Native function-calling models respond via the API's structured tool_calls
+channel instead of (or in addition to) text action blocks. Backends normalize
+raw payloads through this module into a uniform contract:
+
+    [{"name": str, "params": dict}]
+
+Handles:
+- native Ollama format: {"function": {"name": ..., "arguments": dict}}
+- OpenAI-compatible /v1 format: {"function": {"name": ..., "arguments": "<json str>"}}
+- flat formats: {"name": ..., "arguments": ...}
+- pydantic objects (attribute access)
+- malformed payloads degrade to {"_raw": ...} instead of raising
+"""
+
+import json
+import re
+
+__all__ = ["normalize_tool_calls", "merge_tool_call_fragments", "_clean_native_name"]
+
+# Marker-wrapped native tool names: the model may emit "TOOL:`name`" — text
+# action syntax glued around the real name — as the native tool name. Strip
+# the wrapper so the call resolves instead of failing as "Unknown tool".
+_MARKER_NAME_RE = re.compile(r"^(?:TOOL|SKILL)\s*:\s*`?([^`]+?)`?\s*$")
+
+
+def _clean_native_name(name):
+    """Strip text-marker syntax from a native tool name (see _MARKER_NAME_RE)."""
+    m = _MARKER_NAME_RE.match(name.strip())
+    if m:
+        return m.group(1).strip()
+    return name.strip()
+
+# Param keys that are structurally list/dict. Some native-calling models
+# JSON-encode these nested values as strings. Coercion is key-scoped and
+# conservative — free-form strings must keep their string type even if they
+# happen to parse as JSON.
+_STRUCTURED_PARAM_KEYS = {"replacements"}
+
+
+def normalize_tool_calls(raw):
+    """Normalize raw tool_calls (dicts or pydantic objects) to
+    [{"name": str, "params": dict}]. Malformed entries are skipped; string
+    payloads that fail to parse are wrapped in {"_raw": ...}."""
+    out = []
+    for tc in raw or []:
+        if isinstance(tc, dict):
+            fn = tc.get("function") or {}
+            name = fn.get("name") or tc.get("name")
+            args = fn.get("arguments")
+            if args is None:
+                args = tc.get("arguments")
+        else:
+            fn = getattr(tc, "function", None)
+            name = getattr(fn, "name", None) or getattr(tc, "name", None)
+            args = getattr(fn, "arguments", None)
+            if args is None:
+                args = getattr(tc, "arguments", None)
+        if not name:
+            continue
+        name = _clean_native_name(str(name))
+        if not name:
+            continue
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                args = {"_raw": args}
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            try:
+                args = dict(args)
+            except Exception:
+                args = {"_raw": args}
+        for key in _STRUCTURED_PARAM_KEYS.intersection(args):
+            val = args[key]
+            if isinstance(val, str) and val[:1] in ("[", "{"):
+                try:
+                    parsed = json.loads(val)
+                except ValueError:
+                    parsed = None
+                if isinstance(parsed, (list, dict)):
+                    args[key] = parsed
+        out.append({"name": name, "params": args})
+    return out
+
+
+def merge_tool_call_fragments(fragments):
+    """Merge streamed tool_call fragments into complete raw calls.
+
+    Streaming /v1 delivers tool_calls as delta fragments: {"index": N,
+    "function": {"name": partial, "arguments": partial_str}}. Native Ollama
+    chunks may carry complete calls (final-chunk delivery) or fragments —
+    the merge is required on /v1, defensive on native.
+
+    Keyed by index when present (OpenAI format). No-index entries (native
+    format): a named fragment starts a new call; a nameless fragment
+    continues the previous call (dict args extend field-by-field).
+
+    Returns raw merged calls — run normalize_tool_calls() on the result.
+    """
+    merged = {}
+    order = []
+    for tc in fragments or []:
+        if isinstance(tc, dict):
+            index = tc.get("index")
+            fn = tc.get("function") or {}
+            name = fn.get("name")
+            args = fn.get("arguments")
+            tc_id = tc.get("id")
+        else:
+            index = getattr(tc, "index", None)
+            fn = getattr(tc, "function", None)
+            name = getattr(fn, "name", None)
+            args = getattr(fn, "arguments", None)
+            tc_id = getattr(tc, "id", None)
+        if index is not None:
+            key = index
+        elif not name and order:
+            key = order[-1]  # nameless no-index fragment continues previous call
+        else:
+            key = len(order)  # named no-index fragment starts a new call
+        if key not in merged:
+            merged[key] = {"id": tc_id, "name": "", "args_str": "", "args_dict": {}}
+            order.append(key)
+        acc = merged[key]
+        if isinstance(name, str):
+            acc["name"] += name
+        elif name and not acc["name"]:
+            acc["name"] = name
+        if isinstance(args, str):
+            acc["args_str"] += args
+        elif isinstance(args, dict):
+            acc["args_dict"].update(args)
+        elif args is not None:
+            acc["args_dict"] = args
+    result = []
+    for key in order:
+        acc = merged[key]
+        if acc["args_str"]:
+            args = acc["args_str"]  # OpenAI format: JSON string
+        else:
+            args = acc["args_dict"]  # native format: dict ({} when no args)
+        call = {"function": {"name": acc["name"], "arguments": args}}
+        if acc["id"]:
+            call["id"] = acc["id"]
+        call["index"] = key
+        result.append(call)
+    return result

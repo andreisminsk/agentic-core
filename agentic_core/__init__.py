@@ -14,6 +14,7 @@ from .session import AgenticSession
 from .parser import parse_actions, parse_edit_content
 from .system_prompt import build_system_prompt
 from .exceptions import AgenticInterrupted
+from .tool_calls import normalize_tool_calls, merge_tool_call_fragments
 from .backends import (
     Backend, OllamaBackend, OpenAIBackend,
     TokenCounter, TPMTracker, RetryHandler, HistoryTrimmer,
@@ -24,5 +25,6 @@ __all__ = [
     "build_system_prompt", "AgenticInterrupted",
     "Backend", "OllamaBackend", "OpenAIBackend",
     "TokenCounter", "TPMTracker", "RetryHandler", "HistoryTrimmer",
+    "normalize_tool_calls", "merge_tool_call_fragments",
 ]
 __version__ = "0.1.0"

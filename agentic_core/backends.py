@@ -17,6 +17,7 @@ retry. Without tpm_limit, trimming uses full ctx_size and retry is
 connection-errors-only.
 """
 
+import json
 import logging
 import random
 import time
@@ -24,6 +25,7 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Tuple, Optional, Any
 
 from .constants import MODEL_TEMPERATURE
+from .tool_calls import normalize_tool_calls, merge_tool_call_fragments
 from .utils import agent_print
 
 logger = logging.getLogger(__name__)
@@ -306,6 +308,17 @@ class Backend(ABC):
         self._trimmer: Optional[HistoryTrimmer] = None
         self._retry: Optional[RetryHandler] = None
         self._tpm_tracker: Optional[TPMTracker] = None
+        # Native tool_calls from the last call — normalized [{"name", "params"}]
+        # and raw wire shape (for history round-trip). Populated by _call();
+        # reset at the start of every call so state never goes stale.
+        self.last_tool_calls: List[Dict] = []
+        self.last_raw_tool_calls: List[Dict] = []
+
+    def _record_tool_calls(self, fragments):
+        """Merge + normalize raw tool_call fragments captured by _call()."""
+        raw = merge_tool_call_fragments(fragments) if fragments else []
+        self.last_raw_tool_calls = raw
+        self.last_tool_calls = normalize_tool_calls(raw)
 
     def call(self, messages: List[Dict], stream: bool = True,
              on_chunk=None) -> Tuple[str, Optional[int]]:
@@ -323,6 +336,10 @@ class Backend(ABC):
         Note: Does NOT catch KeyboardInterrupt — it propagates to the
         session which raises AgenticInterrupted with partial text.
         """
+        # 0. Reset native tool_calls state (populated by _call below)
+        self.last_tool_calls = []
+        self.last_raw_tool_calls = []
+
         # 1. TPM check (only if configured)
         if self._tpm_tracker and self._token_counter:
             estimated = self._token_counter.count(messages)
@@ -403,6 +420,7 @@ class OllamaBackend(Backend):
 
         if stream:
             chunks = []
+            frags = []
             eval_count = None
             for chunk in response:
                 text = ""
@@ -410,18 +428,26 @@ class OllamaBackend(Backend):
                     text = chunk.get("message", {}).get("content", "")
                     if chunk.get("done"):
                         eval_count = chunk.get("prompt_eval_count")
+                    frags.extend((chunk.get("message") or {}).get("tool_calls") or [])
                 elif hasattr(chunk, "message"):
                     text = chunk.message.content
+                    frags.extend(getattr(chunk.message, "tool_calls", None) or [])
                 if text:
                     chunks.append(text)
                     if on_chunk:
                         on_chunk(text)
+            # Native tool_calls: fragments may arrive spread across chunks —
+            # merge, then normalize. Content contract unchanged.
+            self._record_tool_calls(frags)
             return "".join(chunks), eval_count
         else:
+            # Blocking path delivers tool_calls complete.
             if isinstance(response, dict):
                 content = response.get("message", {}).get("content", "")
+                self._record_tool_calls((response.get("message") or {}).get("tool_calls"))
                 return content, response.get("prompt_eval_count")
             content = response.message.content
+            self._record_tool_calls(getattr(response.message, "tool_calls", None))
             return content, getattr(response, "prompt_eval_count", None)
 
 
@@ -506,18 +532,41 @@ class OpenAIBackend(Backend):
 
     @staticmethod
     def _sanitize_messages(messages: List[Dict]) -> List[Dict]:
-        """Convert messages to OpenAI format."""
+        """Convert messages to OpenAI format, preserving tool-call wire data.
+
+        - assistant entries keep their tool_calls (args coerced to JSON string);
+        - tool-role entries keep tool_call_id/name so per-call results stay
+          attached to their calls;
+        - unknown keys are dropped."""
         sanitized = []
         for m in messages:
             content = m.get("content", "")
             if isinstance(content, list):
                 # Already in multimodal format (vision)
                 sanitized.append(m)
-            else:
-                sanitized.append({
-                    "role": m.get("role", "user"),
-                    "content": content,
-                })
+                continue
+            entry = {
+                "role": m.get("role", "user"),
+                "content": content,
+            }
+            if m.get("tool_calls"):
+                calls = []
+                for call in m["tool_calls"]:
+                    fn = call.get("function") or {}
+                    args = fn.get("arguments")
+                    if not isinstance(args, str):
+                        args = json.dumps(args or {})
+                    c = {"type": "function",
+                         "function": {"name": fn.get("name", ""), "arguments": args}}
+                    if call.get("id"):
+                        c["id"] = call["id"]
+                    calls.append(c)
+                entry["tool_calls"] = calls
+            if m.get("tool_call_id"):
+                entry["tool_call_id"] = m["tool_call_id"]
+            if m.get("name") and m.get("role") == "tool":
+                entry["name"] = m["name"]
+            sanitized.append(entry)
         return sanitized
 
     def _build_create_kwargs(self, messages: List[Dict], stream: bool) -> Dict[str, Any]:
@@ -584,6 +633,7 @@ class OpenAIBackend(Backend):
         response = self._call_create(messages, stream=True)
         chunks = []
         eval_count = None
+        frags = []
 
         for chunk in response:
             if not chunk.choices:
@@ -594,6 +644,11 @@ class OpenAIBackend(Backend):
                 chunks.append(text)
                 if on_chunk:
                     on_chunk(text)
+            # Native tool_calls (Phase 3): collect delta fragments for merge
+            frags.extend(getattr(delta, "tool_calls", None) or [])
+
+        # Native tool_calls: merge delta fragments and normalize
+        self._record_tool_calls(frags)
 
         # Get usage from final chunk if available
         if hasattr(response, 'usage') and response.usage:
@@ -604,6 +659,8 @@ class OpenAIBackend(Backend):
     def _call_blocking(self, messages: List[Dict]) -> Tuple[str, Optional[int]]:
         """Non-streaming call using OpenAI SDK."""
         response = self._call_create(messages, stream=False)
-        content = response.choices[0].message.content or ""
+        message = response.choices[0].message
+        content = message.content or ""
+        self._record_tool_calls(getattr(message, "tool_calls", None))
         eval_count = response.usage.prompt_tokens if response.usage else None
         return content, eval_count
