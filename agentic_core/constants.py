@@ -17,6 +17,11 @@ MAX_BATCH_WRITES = 3
 MAX_IDENTICAL_ACTION_REPEATS = 3
 MAX_FEEDBACK_ROUNDS = 3
 
+# Cross-send radar (ported from uhu bc74abc): soft-warning threshold for the
+# SAME action signature repeated across IDENTICAL re-prompts (separate .run()
+# calls). Soft warning only — never skips (files may legitimately change).
+CROSS_SEND_LOOP_WARN_THRESHOLD = 3
+
 # ── Safe shell commands (auto-approved, read-only) ─────────────────────
 SAFE_SHELL_COMMANDS_UNIX = {
     'ls', 'tree', 'pwd', 'cd', 'cat', 'head', 'tail', 'less', 'more',

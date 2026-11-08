@@ -17,7 +17,13 @@ Handles:
 import json
 import re
 
-__all__ = ["normalize_tool_calls", "merge_tool_call_fragments", "_clean_native_name"]
+__all__ = ["normalize_tool_calls", "merge_tool_call_fragments", "_clean_native_name", "looks_like_text_action"]
+
+# Native names longer than this are almost certainly channel-mixing blobs
+# (field, uhu 2026-11-08: a text RUN block + prose poured into the name slot
+# during a failed-call recovery). Real tool names are short; degrade instead
+# of passing the blob to the registry.
+_MAX_NATIVE_NAME_LEN = 64
 
 # Marker-wrapped native tool names: the model may emit "TOOL:`name`" — text
 # action syntax glued around the real name — as the native tool name. Strip
@@ -31,6 +37,19 @@ def _clean_native_name(name):
     if m:
         return m.group(1).strip()
     return name.strip()
+
+
+# Text-action markers in the native name slot: a name like "WRITE:`hello.py`"
+# means the model tried to issue a text action on the native channel —
+# channel-mixing. Detected (not auto-executed — the name slot may be
+# truncated) and degraded to a steering entry the pipeline can report.
+_TEXT_ACTION_MARKER_RE = re.compile(r"^(?:WRITE|EDIT|FILE|RUN)\s*[:`]", re.IGNORECASE)
+
+
+def looks_like_text_action(name):
+    """True when a native tool name starts with a text-action marker
+    (WRITE:/EDIT:/FILE:/RUN:) — channel-mixing, needs steering."""
+    return bool(_TEXT_ACTION_MARKER_RE.match(name.strip()))
 
 # Param keys that are structurally list/dict. Some native-calling models
 # JSON-encode these nested values as strings. Coercion is key-scoped and
@@ -58,6 +77,20 @@ def normalize_tool_calls(raw):
             if args is None:
                 args = getattr(tc, "arguments", None)
         if not name:
+            continue
+        # Channel-mixing blob in the name slot: degrade to a _raw-style entry
+        # so the pipeline reports a clear, actionable failure instead of
+        # "Unknown tool '<500-char blob>'". Checked BEFORE the marker cleanup:
+        # a long blob is unreconstructable; a short marker name is steerable.
+        if len(name) > _MAX_NATIVE_NAME_LEN:
+            out.append({"name": "_malformed_native_call",
+                        "params": {"_raw": name[:512]}})
+            continue
+        # Text-action marker in the name slot (WRITE:`hello.py` etc.):
+        # degrade to a steering entry — NOT auto-executed (name may be truncated).
+        if looks_like_text_action(name):
+            out.append({"name": "_text_action_mixing",
+                        "params": {"_raw": name[:512]}})
             continue
         name = _clean_native_name(str(name))
         if not name:

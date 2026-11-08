@@ -1,12 +1,15 @@
 """AgenticSession: the feedback loop that ties parser, actions, and model together."""
 
+import hashlib
 import json
+import os
 import sys
 from datetime import date
 
 from .constants import (
     MODEL_TEMPERATURE, MAX_FEEDBACK_ROUNDS,
     MAX_IDENTICAL_ACTION_REPEATS, get_platform_info,
+    CROSS_SEND_LOOP_WARN_THRESHOLD,
 )
 from .parser import parse_actions, extract_text_outside_blocks
 from .actions import ActionExecutor, agent_print
@@ -99,6 +102,15 @@ class AgenticSession:
         # Loop detection state
         self._last_action_signature = None
         self._repeat_count = 0
+        # Cross-send repetition radar (ported from uhu, 2026-11-08): identical
+        # re-prompts re-running the same action across separate .run() calls.
+        # Soft warning at CROSS_SEND_LOOP_WARN_THRESHOLD; reset by a changed
+        # user message; decayed by disk change (legitimate re-verification).
+        self._cross_sig_rounds = {}
+        self._cross_prev_prompt = None
+        self._last_workdir_sig = None
+        self._current_sigs = set()
+        self._last_user_prompt = None
 
         # Native tool_calls snapshot from the last model call — consumed
         # exactly once per action round by run() (never leaks between rounds).
@@ -115,6 +127,13 @@ class AgenticSession:
         """
         self.history.append({"role": "user", "content": user_text})
 
+        # Radar + within-run repeat state: one increment per run() (send);
+        # identical-repeat counting restarts each run — the cross radar
+        # carries across runs (uhu semantics).
+        self._radar_counted_this_run = False
+        self._last_action_signature = None
+        self._repeat_count = 0
+
         try:
             final_text = ""
             for round_num in range(self.max_feedback_rounds + 1):
@@ -128,7 +147,17 @@ class AgenticSession:
                 actions = parse_actions(response_text)
                 native_actions = self._native_to_actions(pending)
                 if native_actions:
-                    actions = (actions or []) + native_actions
+                    # Dedupe: models occasionally emit the same action on BOTH
+                    # channels (text block + native tool_call). Keyed on the
+                    # action signature; first occurrence wins.
+                    seen_sigs = set()
+                    for a in (actions or []):
+                        seen_sigs.add(self._action_signature([a]))
+                    for na in native_actions:
+                        sig = self._action_signature([na])
+                        if sig not in seen_sigs:
+                            seen_sigs.add(sig)
+                            actions.append(na)
 
                 if not actions:
                     # No actions — this is the final response
@@ -137,7 +166,11 @@ class AgenticSession:
                     break
 
                 # Check for repeated identical actions (loop detection)
-                sig = self._action_signature(actions)
+                # a LIST of signatures (uhu's per-action shape). The older
+                # whole-run string is still used for the cross-send radar key.
+                # Check for repeated identical actions (loop detection) — per-action
+                # signatures so partial repeats still nudge (uhu behavior).
+                sig = self._action_signature([a for a in (actions or [])])
                 if sig == self._last_action_signature:
                     self._repeat_count += 1
                     if self._repeat_count >= MAX_IDENTICAL_ACTION_REPEATS:
@@ -156,6 +189,11 @@ class AgenticSession:
                 entry = {"role": "assistant", "content": response_text}
                 if pending and pending.get("raw"):
                     entry["tool_calls"] = pending["raw"]
+
+                # Cross-send radar (before the within-run repeat guard): soft
+                # warning when the SAME action signature re-fires on a NEW run
+                # with an IDENTICAL user prompt. Never skips — files change.
+                self._check_cross_send_radar(user_text, actions)
                 self.history.append(entry)
 
                 # Execute actions
@@ -193,6 +231,80 @@ class AgenticSession:
                     self.history.append({"role": "user", "content": e.partial_text})
             # Re-raise so the app can handle UX (print message, continue loop)
             raise
+
+    def _check_cross_send_radar(self, user_text, actions):
+        """Cross-send repetition radar (ported from uhu, bc74abc, 2026-11-08).
+
+        Live shape: the user sends the same prompt repeatedly; each run the
+        model emits the SAME action, gets the same result. Within-run loop
+        detection never fires because each run() starts fresh.
+
+        Rules:
+        - identical re-prompt: counts persist across runs via _cross_sig_rounds;
+          at CROSS_SEND_LOOP_WARN_THRESHOLD a soft warning is injected into the
+          observation fed back (and printed).
+        - different user message: counters reset (fresh task).
+        - disk change between identical prompts: counts decay by 2
+          (re-run may be legitimate re-verification).
+        - hard skip stays within-run only (untouched).
+        """
+        prompt_hash = hashlib.sha1(user_text.encode("utf-8", "replace")).hexdigest()
+        if prompt_hash != self._last_user_prompt:
+            # Different message than the previous run — fresh task: reset.
+            # (First ever run has no previous prompt: nothing to reset.)
+            if self._last_user_prompt is not None:
+                self._cross_sig_rounds = {}
+            self._last_user_prompt = prompt_hash
+
+        workdir_sig = self._workdir_fingerprint()
+        if self._last_workdir_sig is not None and workdir_sig != self._last_workdir_sig:
+            for k in list(self._cross_sig_rounds):
+                self._cross_sig_rounds[k] = max(0, self._cross_sig_rounds[k] - 2)
+                if self._cross_sig_rounds[k] == 0:
+                    del self._cross_sig_rounds[k]
+        self._last_workdir_sig = workdir_sig
+
+        warnings = []
+        self._current_sigs = set()
+        for a in (actions if isinstance(actions, list) else [actions]):
+            self._current_sigs.add(self._action_signature([a]))
+        # Same (prompt, action) pair is counted ONCE per run() (per send),
+        # not per feedback round — multi-round repeats belong to the
+        # within-run guard; the cross radar tracks re-SENDS.
+        if not self._radar_counted_this_run:
+            self._radar_counted_this_run = True
+            for sig in self._current_sigs:
+                rounds = self._cross_sig_rounds.get(sig, 0) + 1
+                self._cross_sig_rounds[sig] = rounds
+                if rounds >= CROSS_SEND_LOOP_WARN_THRESHOLD:
+                    warnings.append(
+                        f"⚠ CROSS-SEND REPETITION: the same action has been repeated "
+                        f"{rounds} runs in a row for identical prompts. If files have "
+                        f"changed and re-checking is intended, ignore this; otherwise "
+                        f"consider a different action or a more specific request.")
+
+        if warnings:
+            msg = "\n".join(warnings)
+            agent_print(msg + "\n")
+            self.history.append({"role": "system", "content": msg})
+
+    def _workdir_fingerprint(self):
+        """Lightweight workdir state signature for cross-send decay.
+        Non-recursive; captures file mtimes only (cheap, stdlib)."""
+        try:
+            entries = []
+            for name in sorted(os.listdir(self.workdir)):
+                if name.startswith("."):
+                    continue
+                p = os.path.join(self.workdir, name)
+                try:
+                    st = os.stat(p)
+                    entries.append(f"{name}:{st.st_mtime_ns}")
+                except OSError:
+                    continue
+            return hash(tuple(entries))
+        except OSError:
+            return 0
 
     def _call_model(self):
         """Call the model and return the full response text.
@@ -341,3 +453,6 @@ class AgenticSession:
         self._last_action_signature = None
         self._repeat_count = 0
         self._pending_native = None
+        self._cross_sig_rounds = {}
+        self._cross_prev_prompt = None
+        self._last_workdir_sig = None
