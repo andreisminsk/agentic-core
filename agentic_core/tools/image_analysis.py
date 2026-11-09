@@ -35,6 +35,11 @@ class ImageAnalysisTool:
     )
     auto_approve = False  # makes an external LLM call
 
+    parameters = {
+        "path": {"type": "string", "required": True, "description": "Path to the image file"},
+        "prompt": {"type": "string", "description": "Question or instruction about the image (default: describe in detail)"},
+        "model": {"type": "string", "description": "Override the configured vision model"},
+    }
     def __init__(self, client=None, model=None, base_url=None):
         """Args:
             client: Ollama-compatible client (duck-typed). If None, lazily created.

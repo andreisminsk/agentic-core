@@ -50,7 +50,22 @@ class AgenticSession:
                  system_prompt=None, name="uhu", confirm_callback=None,
                  auto_approve_safe=False, stream=True, temperature=None,
                  max_feedback_rounds=None, config_filename="agentic-core.json",
-                 on_chunk=None, backend=None):
+                 on_chunk=None, backend=None,
+                 native_tools=None, tools_mode="text"):
+        """
+        ...
+        native_tools: None = never solicit (passive capture only);
+                      True = solicited native tools (schemas on the wire);
+                      False = explicit off (same as None). Kept separate from
+                      tools_mode for hosts that probe capability themselves.
+        tools_mode: "text" (default, unchanged behavior) | "hybrid" | "native".
+                      native = single-channel native solicitation (schemas +
+                      native prompt); hybrid = schemas + text blocks preferred
+                      for file content, file tools as native backup. Both
+                      require native_tools=True (or backend preconfigured with
+                      tools_schemas) — otherwise they degrade to "text" with
+                      passive capture.
+        """
         self.temperature = temperature if temperature is not None else MODEL_TEMPERATURE
 
         # Backend: explicit backend, or auto-wrap client in OllamaBackend
@@ -66,7 +81,19 @@ class AgenticSession:
         self.workdir = workdir
         self.tools = tools
         self.skills = skills
+        self.tools_mode = tools_mode if tools_mode in ("text", "hybrid", "native") else "text"
+        self.native_tools = bool(native_tools) and self.tools_mode != "text"
         self.stream = stream
+
+        # Native solicitation: attach schemas to the backend (wire tools param).
+        # Degrades to passive capture when no schemas are available (e.g. a
+        # backend the host preconfigured, or all-prose tool registries).
+        if isinstance(self.backend, Backend):
+            if native_tools and self.tools_mode != "text" and self.tools:
+                from .tools import tools_schemas
+                schemas = tools_schemas()
+                if schemas:
+                    self.backend.tools_schemas = schemas
         self.on_chunk = on_chunk
         self.max_feedback_rounds = max_feedback_rounds or MAX_FEEDBACK_ROUNDS
 
@@ -74,10 +101,19 @@ class AgenticSession:
         if system_prompt is None:
             extra = []
             if tools:
-                from .tools import tools_system_prompt
-                tp = tools_system_prompt()
-                if tp:
-                    extra.append(tp)
+                if self.native_tools and self.tools_mode in ("native", "hybrid"):
+                    # Native solicitation: schemas travel on the wire — the
+                    # per-tool prose listing is REPLACED by the compact
+                    # channel policy (uhu lesson: text-block docs in native
+                    # mode invite collisions; stripping them is a cost lever).
+                    from .tools import tools_native_prompt
+                    extra.append(tools_native_prompt(channel=(
+                        "hybrid" if self.tools_mode == "hybrid" else "native")))
+                else:
+                    from .tools import tools_system_prompt
+                    tp = tools_system_prompt()
+                    if tp:
+                        extra.append(tp)
             if skills:
                 from .skills import skills_system_prompt
                 sp = skills_system_prompt()
@@ -102,6 +138,10 @@ class AgenticSession:
         # Loop detection state
         self._last_action_signature = None
         self._repeat_count = 0
+        # Channel-mixing counter (uhu session-2): 1st mixing event → warning;
+        # 3rd → suggest native-only mode. Executor reads/increments via attrs
+        # (single-owner: session owns state, executor owns the message).
+        self._mixing_count = 0
         # Cross-send repetition radar (ported from uhu, 2026-11-08): identical
         # re-prompts re-running the same action across separate .run() calls.
         # Soft warning at CROSS_SEND_LOOP_WARN_THRESHOLD; reset by a changed
@@ -456,3 +496,4 @@ class AgenticSession:
         self._cross_sig_rounds = {}
         self._cross_prev_prompt = None
         self._last_workdir_sig = None
+        self._mixing_count = 0

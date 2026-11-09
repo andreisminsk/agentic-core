@@ -539,6 +539,14 @@ class ActionExecutor(CommandSafety, FileOperations):
                     f"Option B: call the native tool '{backup}' with JSON parameters only "
                     f"(do not include {marker or 'text'} block syntax in the tool call).]"
                 )
+                self._mixing_count = getattr(self, "_mixing_count", 0) + 1
+                if self._mixing_count >= 3:
+                    msg += ("\n\n[SYSTEM: this is the third channel-mixing event. This model "
+                            "keeps pouring text blocks into native tool calls. Prefer the "
+                            "native channel exclusively for the rest of the session: issue "
+                            f"ALL actions as native tool calls ({backup} for file "
+                            "writes/edits) and avoid FILE:/WRITE:/EDIT: text blocks "
+                            "entirely.]")
                 tool_print(msg + "\n")
                 return msg
             return f"Error: unknown tool: {name}"

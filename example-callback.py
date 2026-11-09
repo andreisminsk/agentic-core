@@ -134,6 +134,10 @@ def main():
         confirm_callback=custom_confirm,
         max_feedback_rounds=5,
         config_filename=".myapp/agentic-config.json",
+        # Native tool calling (optional — see example-native.py):
+        native_tools=None,        # None/False = off (default, text protocol)
+                                  # True = solicit: tool schemas on the wire
+        tools_mode="text",        # "text" (default) | "hybrid" | "native"
     )
 
     print("Agentic session ready (custom callback). Type 'quit' to exit.\n")

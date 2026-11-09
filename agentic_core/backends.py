@@ -308,6 +308,18 @@ class Backend(ABC):
         self._trimmer: Optional[HistoryTrimmer] = None
         self._retry: Optional[RetryHandler] = None
         self._tpm_tracker: Optional[TPMTracker] = None
+        # Native solicitation: tool schemas to send on the wire (None = off).
+        # When set, both backends inject {"tools": [...]} into the request;
+        # a provider rejecting the param triggers the drop-and-retry fallback.
+        self.tools_schemas: Optional[List[Dict]] = None
+        # Per-call active tools (populated by OpenAIBackend._call from
+        # tools_schemas; None = no solicitation this call).
+        self._tools_active: Optional[List[Dict]] = None
+        # Host-set capability hint (None = unknown). The core never probes
+        # the server (transport-agnostic by design); hosts that can detect
+        # tool support (uhu: /api/tags) set this. None + schemas set = send
+        # schemas anyway (solicitation is the host's explicit choice).
+        self.supports_tools: Optional[bool] = None
         # Native tool_calls from the last call — normalized [{"name", "params"}]
         # and raw wire shape (for history round-trip). Populated by _call();
         # reset at the start of every call so state never goes stale.
@@ -319,6 +331,62 @@ class Backend(ABC):
         raw = merge_tool_call_fragments(fragments) if fragments else []
         self.last_raw_tool_calls = raw
         self.last_tool_calls = normalize_tool_calls(raw)
+
+    @staticmethod
+    def _wire_tool_results(messages: List[Dict]) -> List[Dict]:
+        """Wire-boundary fix for the native function-calling protocol
+        (port of uhu's _wire_tool_results, both backends).
+
+        After an assistant tool_calls message, tool-role results must
+        immediately follow — one per call. The core's stored history uses a
+        single user-observation message (or per-call tool roles from
+        session._append_observations). This pass:
+        - splits a user observation following a tool_calls assistant into
+          per-call tool-role results (synthesizing stable tool_call_ids on
+          both sides when the stored call lacks one);
+        - defers intervening system messages past the tool results.
+        Stored history is untouched — conversion happens only for the wire.
+        """
+        out: List[Dict] = []
+        pending_system: List[Dict] = []
+        for m in messages:
+            role = m.get("role")
+            if role == "system":
+                if out and out[-1].get("tool_calls"):
+                    pending_system.append(m)
+                    continue
+                if pending_system:
+                    out.extend(pending_system)
+                    pending_system = []
+                out.append(m)
+                continue
+            calls = out[-1].get("tool_calls") if (out and out[-1].get("tool_calls")) else None
+            if role == "user" and calls:
+                for idx, tc in enumerate(calls):
+                    fn = tc.get("function") or {}
+                    call_id = tc.get("id") or fn.get("call_id") or (
+                        f"ac_{len(out) - 1}_{idx}")
+                    tc.setdefault("id", call_id)
+                    out.append({"role": "tool", "tool_call_id": call_id,
+                                "content": m.get("content") or ""})
+                continue
+            if role == "tool" and calls:
+                call_id = (out and (out[-1].get("tool_calls") or [])[0]
+                           and ((out[-1].get("tool_calls") or [])[0].get("id")
+                                or f"ac_{len(out) - 1}_0"))
+                (out[-1].get("tool_calls") or [])[0].setdefault("id", call_id) \
+                    if out and out[-1].get("tool_calls") else None
+                tc = dict(m)
+                tc.setdefault("tool_call_id", call_id)
+                out.append(tc)
+                continue
+            if pending_system:
+                out.extend(pending_system)
+                pending_system = []
+            out.append(m)
+        if pending_system:
+            out.extend(pending_system)
+        return out
 
     def call(self, messages: List[Dict], stream: bool = True,
              on_chunk=None) -> Tuple[str, Optional[int]]:
@@ -397,11 +465,12 @@ class OllamaBackend(Backend):
     stream=, options=) works.
     """
 
-    def __init__(self, client, model, temperature=0.0):
+    def __init__(self, client, model, temperature=0.0, tools_schemas=None):
         super().__init__()
         self.client = client
         self.model = model
         self.temperature = temperature
+        self.tools_schemas = tools_schemas or None
         # All middleware = None → zero overhead, exact current behavior
 
     def _call(self, messages: List[Dict], stream: bool = True,
@@ -411,12 +480,32 @@ class OllamaBackend(Backend):
         Handles both dict-style and object-style chunk formats.
         Does NOT catch KeyboardInterrupt — propagates to session.
         """
-        response = self.client.chat(
-            model=self.model,
-            messages=messages,
-            stream=stream,
-            options={"temperature": self.temperature},
-        )
+        if self.tools_schemas:
+            # Native solicitation on: convert observed results to the
+            # tool-role wire protocol (stored history untouched).
+            messages = self._wire_tool_results(messages)
+        options = {"temperature": self.temperature}
+        native_kwargs = {}
+        if self.tools_schemas:
+            native_kwargs["tools"] = self.tools_schemas
+        try:
+            response = self.client.chat(
+                model=self.model,
+                messages=messages,
+                stream=stream,
+                options=options,
+                **native_kwargs,
+            )
+        except TypeError:
+            # Client with a narrower chat() signature (no tools param) —
+            # degrade to text-channel solicitation (merge catch stays on).
+            response = self.client.chat(
+                model=self.model,
+                messages=messages,
+                stream=stream,
+                options=options,
+            )
+            self._tools_rejected = True
 
         if stream:
             chunks = []
@@ -470,8 +559,10 @@ class OpenAIBackend(Backend):
     def __init__(self, base_url: str, api_key: str, model: str,
                  ctx_size: int = 8192, temperature: float = 0.0,
                  thinking: bool = False, tpm_limit: Optional[int] = None,
-                 max_context: Optional[int] = None, quiet: bool = False):
+                 max_context: Optional[int] = None, quiet: bool = False,
+                 tools_schemas: Optional[List[Dict]] = None):
         super().__init__()
+        self.tools_schemas = tools_schemas or None
         try:
             from openai import OpenAI
         except ImportError:
@@ -582,6 +673,8 @@ class OpenAIBackend(Backend):
         # We try it first, fall back to max_tokens, then to no max param.
         max_val = min(self.ctx_size, 8192)
         kwargs["max_completion_tokens"] = max_val
+        if self._tools_active:
+            kwargs["tools"] = self._tools_active
         return kwargs
 
     def _call_create(self, messages: List[Dict], stream: bool):
@@ -591,6 +684,13 @@ class OpenAIBackend(Backend):
             return self.client.chat.completions.create(**kwargs)
         except Exception as e:
             err_str = str(e).lower()
+            # Some providers/models reject the tools param — drop it and
+            # retry without solicitation (text channel + merge catch remain).
+            if self._tools_active and "tools" in err_str:
+                logger.warning("OpenAI fallback: retrying without tools (%s)", e)
+                kwargs.pop("tools", None)
+                self._tools_active = None
+                return self.client.chat.completions.create(**kwargs)
             if "max_completion_tokens" in err_str or "unrecognized" in err_str:
                 kwargs.pop("max_completion_tokens", None)
                 kwargs["max_tokens"] = min(self.ctx_size, 8192)
@@ -621,6 +721,9 @@ class OpenAIBackend(Backend):
         Handles max_completion_tokens → max_tokens → no-max fallback.
         Does NOT catch KeyboardInterrupt — propagates to session.
         """
+        self._tools_active = self.tools_schemas if self.tools_schemas else None
+        if self._tools_active:
+            messages = self._wire_tool_results(messages)
         messages = self._sanitize_messages(messages)
 
         if stream:

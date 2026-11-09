@@ -1,4 +1,5 @@
-"""Example: MCP (Model Context Protocol) integration with agentic-core.
+"""Example: MCP (Model Context Protocol) integration with agentic-core,
+running in NATIVE HYBRID mode.
 
 Run from the agentic-core repo root:
 
@@ -7,20 +8,24 @@ Run from the agentic-core repo root:
 Demonstrates the full host wiring:
   1. MCPManager with a config source (the mcpServers dict — in a real
      app, load it from your config file, fresh on every call)
-  2. Lazy activation: the mcp_usage meta-tool + a stub line in the
-     system prompt (MCP tools cost zero prompt tokens until used)
-  3. Lifecycle: connect on demand, sync, close at shutdown
+  2. Native hybrid mode: tool schemas (BUILT-IN + MCP) are attached to
+     the LLM request, so function-calling models emit structured
+     tool_calls; the prompt still PREFERs text action blocks
+     (FILE:/WRITE:/EDIT:) for file content, with read_file/write_file/
+     replace_in_file kept on the wire as BACKUP.
+  3. Lifecycle: connect at startup (so MCP schemas travel on the wire),
+     mcp_usage stays registered as the lazy re-activation path, close
+     at shutdown.
 
 The config below mirrors a typical .mercury.json mcpServers section:
 an HTTP server (huggingface), a stdio server (mcp-mermaid), and a
 disabled one (playwright) that is skipped.
 """
 
-import json
-
-from agentic_core import AgenticSession, build_system_prompt
+from agentic_core import AgenticSession
+from agentic_core.backends import OpenAIBackend
 from agentic_core.mcp import MCPManager, MCPUsageTool
-from agentic_core.tools import register
+from agentic_core.tools import tools_schemas, register
 
 MCP_SERVERS = {
     "huggingface": {
@@ -48,27 +53,52 @@ def main():
     # 1. The manager — host-injected config source
     mcp = MCPManager(get_config=lambda: MCP_SERVERS)
 
-    # 2. Lazy activation: register the meta-tool; MCP tool docs are
-    #    served on demand (mcp_usage connects + returns the docs).
+    # 2. Register the meta-tool FIRST: it stays on the wire in hybrid
+    #    mode (it declares `parameters`) as the re-activation path for
+    #    servers not connected yet / tools registered later.
     register(MCPUsageTool(mcp))
 
-    stub = "MCP TOOLS AVAILABLE (not shown here): huggingface, mcp-mermaid.\n" \
-           "Invoke TOOL:mcp_usage to connect and see their full " \
-           "documentation when the user wants to use them."
+    # 3. Eager connect BEFORE building schemas — in native hybrid mode
+    #    registered mcp_* tools travel AS SCHEMAS on the wire (the
+    #    prompt skip in tools_system_prompt serves docs on demand, but
+    #    native-calling models never read prompt docs — their channel
+    #    is the tools array). MCPTool qualifies: its `parameters` come
+    #    from the server-declared input_schema.
+    mcp.connect()
 
-    # 3. The session — the stub line rides in extra_sections
-    from ollama import Client
+    # 4. The session — solicited native tools, hybrid mode.
+    #    No custom system_prompt: the session builds it and, because
+    #    native_tools + hybrid are set, REPLACES the per-tool prose
+    #    listing with the compact channel policy
+    #    (tools_native_prompt("hybrid")): native calls preferred,
+    #    text action blocks for file content, native file tools as
+    #    backup. Schemas are attached to the backend automatically.
     session = AgenticSession(
-        client=Client(host="http://localhost:11434"),
-        model="glm-5.3-flash:cloud",
-        workdir=".",
-        system_prompt=build_system_prompt(
-            name="mcp-demo", tools=True, skills=False,
-            extra_sections=[stub],
+        backend=OpenAIBackend(
+            base_url="http://localhost:11434",   # Ollama /v1, vLLM, LM Studio, ...
+            api_key="ollama",
+            model="glm-5.3-flash:cloud",         # your function-calling model
+            ctx_size=32768,
+            tools_schemas=tools_schemas(),       # built-ins + mcp_* tools
         ),
+        workdir=".",
+        name="mcp-demo",
+        tools=True,
+        skills=False,
+        native_tools=True,     # solicitation on (schemas + native prompt)
+        tools_mode="hybrid",   # schemas + text blocks preferred for files,
+                               #   read_file/write_file/replace_in_file as
+                               #   native backup; "native" = single channel
         auto_approve_safe=True,   # demo: no interactive confirmations
     )
+    # LAZY alternative: skip mcp.connect(), then after mcp_usage connects
+    # the host must reattach the refreshed schemas —
+    #   session.backend.tools_schemas = tools_schemas()
+    # (mcp_usage still returns full docs; newly registered mcp_* tools
+    # become callable natively on the next model call.)
 
+    print("Agentic session ready (native HYBRID mode: native tool_calls, "
+          "text blocks for file content).\n")
     print("Ask things like: 'search huggingface for text-to-speech models'")
     print("or: 'what MCP tools do we have?'  (Ctrl+C to quit)\n")
     try:

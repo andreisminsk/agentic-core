@@ -101,6 +101,13 @@ def main():
         name="myapp",
         auto_approve_safe=False,  # ask before WRITE/EDIT/RUN
         max_feedback_rounds=3,
+        # Native tool calling — pass tools_schemas=tools_schemas() to the
+        # OpenAIBackend above first (see example-native.py):
+        native_tools=None,        # None/False = off (default, text protocol)
+                                  # True = solicit: tool schemas on the wire
+        tools_mode="text",        # "text" (default) | "hybrid" (schemas +
+                                  #   text blocks preferred, native backup)
+                                  # | "native" (schemas, single channel)
     )
 
     print(f"Agentic session ready (OpenAI backend: {base_url}, model: {model}).")

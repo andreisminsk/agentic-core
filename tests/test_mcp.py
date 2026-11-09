@@ -445,3 +445,85 @@ class TestReconnectAndServerMessages:
         t = StdioTransport(command="no-such-cmd-xyz", name="p")
         with pytest.raises(MCPConnectionError):
             t.connect()
+
+
+# ── MCP tools in native modes ───────────────────────────────────────────
+
+class TestMCPNativeSchemas:
+    """Registered mcp_* tools travel in tools_schemas() — native-calling
+    models never read prompt docs; the tools array IS the doc channel.
+    The lazy-activation SKIP stays prompt-side only (tools_system_prompt).
+    eb07956 lesson: MCPTool always qualifies via input_schema duck-check —
+    an empty parameters dict means the SERVER declared the tool
+    parameterless, not a docs bug."""
+
+    def _register_mcp(self, monkeypatch, *tools):
+        registry = {}
+        monkeypatch.setattr(tools_mod, "_registry", registry, raising=False)
+        for t in tools:
+            tools_mod.register(t)
+        return registry
+
+    def _mcp_tool(self, name, schema):
+        return MCPTool(name=name, description="d", input_schema=schema,
+                       server_name="s", transport=FakeTransport())
+
+    def test_registered_mcp_tool_in_schemas(self, monkeypatch):
+        from agentic_core.tools import tools_schemas
+        t = self._mcp_tool("mcp_github_get_repo", _tool_def()["inputSchema"])
+        self._register_mcp(monkeypatch, t)
+        schemas = tools_schemas()
+        names = [s["function"]["name"] for s in schemas]
+        assert "mcp_github_get_repo" in names
+        fn = next(s for s in schemas
+                  if s["function"]["name"] == "mcp_github_get_repo")["function"]
+        assert fn["parameters"]["properties"]["query"]["type"] == "string"
+
+    def test_registered_mcp_parameterless_in_schemas(self, monkeypatch):
+        from agentic_core.tools import tools_schemas
+        t = self._mcp_tool("mcp_github_get_me", {})
+        self._register_mcp(monkeypatch, t)
+        schemas = tools_schemas()
+        fn = next(s for s in schemas
+                  if s["function"]["name"] == "mcp_github_get_me")["function"]
+        assert fn["parameters"] == {"type": "object", "properties": {},
+                                    "required": []}
+
+    def test_unregistered_mcp_not_in_schemas(self, monkeypatch):
+        # Lazy activation: tools are registered only after the host
+        # connects (register_tools()) — before that, zero wire cost.
+        from agentic_core.tools import tools_schemas
+        self._register_mcp(monkeypatch)  # empty registry but for nothing
+        schemas = tools_schemas()
+        assert not any(s["function"]["name"].startswith("mcp_")
+                       for s in schemas)
+
+    def test_mcp_usage_meta_tool_in_schemas(self, monkeypatch):
+        # mcp_usage declares parameters explicitly → included like any tool
+        from agentic_core.tools import tools_schemas
+        from agentic_core.mcp.manager import MCPUsageTool
+        u = MCPUsageTool(object())
+        # MCPUsageTool has parameters; register manually
+        registry = {}
+        monkeypatch.setattr(tools_mod, "_registry", registry, raising=False)
+        tools_mod.register(u)
+        schemas = tools_schemas()
+        assert any(s["function"]["name"] == "mcp_usage" for s in schemas)
+
+
+class TestMCPPromptLazyActivation:
+    """The PROMPT skip is unchanged: registered mcp_* stay excluded from
+    tools_system_prompt (docs served on demand via mcp_usage)."""
+
+    def test_mcp_excluded_from_prompt_but_present_in_schemas(self, monkeypatch):
+        from agentic_core.tools import tools_system_prompt, tools_schemas
+        t = MCPTool(name="mcp_s_search", description="Search things",
+                    input_schema=_tool_def()["inputSchema"],
+                    server_name="s", transport=FakeTransport())
+        registry = {}
+        monkeypatch.setattr(tools_mod, "_registry", registry, raising=False)
+        tools_mod.register(t)
+        prompt = tools_system_prompt()
+        assert "mcp_s_search" not in prompt
+        schemas = tools_schemas()
+        assert any(s["function"]["name"] == "mcp_s_search" for s in schemas)

@@ -85,6 +85,10 @@ class CalculatorTool:
     )
     auto_approve = True
 
+    parameters = {
+        "expression": {"type": "string", "required": True, "description": "The mathematical expression to evaluate"},
+        "precision": {"type": "integer", "description": "Round result to this many decimal places"},
+    }
     def execute(self, params, workdir=None):
         expr = params.get("expression", "").strip()
         if not expr:

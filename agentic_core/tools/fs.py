@@ -16,6 +16,11 @@ class ReadFileTool:
         "limit (int, optional, default 2000)."
     )
     auto_approve = True
+    parameters = {
+        "path": {"type": "string", "required": True, "description": "File path (relative to workdir)"},
+        "offset": {"type": "integer", "description": "1-based line to start reading from (default 1)"},
+        "limit": {"type": "integer", "description": "Max lines to read (default 2000)"},
+    }
 
     def execute(self, params, workdir=None):
         path = params.get("path", "")
@@ -49,6 +54,11 @@ class WriteFileTool:
         "append (bool, optional, default false)."
     )
     auto_approve = True
+    parameters = {
+        "path": {"type": "string", "required": True, "description": "File path (parents auto-created)"},
+        "content": {"type": "string", "required": True, "description": "Full file content to write"},
+        "append": {"type": "boolean", "description": "Append instead of overwrite (default false)"},
+    }
 
     def execute(self, params, workdir=None):
         path = params.get("path", "")
@@ -77,6 +87,15 @@ class ReplaceInFileTool:
         "each object has 'search' and 'replace' string fields."
     )
     auto_approve = True
+    parameters = {
+        "path": {"type": "string", "required": True, "description": "Existing file path"},
+        "replacements": {"type": "array", "required": True,
+                         "items": {"type": "object",
+                                   "properties": {"search": {"type": "string"},
+                                                  "replace": {"type": "string"}},
+                                   "required": ["search", "replace"]},
+                         "description": "List of {search, replace} exact-string pairs"},
+    }
 
     def execute(self, params, workdir=None):
         path = params.get("path", "")
@@ -115,6 +134,11 @@ class ListFilesTool:
         "glob (string, optional, default '*')."
     )
     auto_approve = True
+    parameters = {
+        "path": {"type": "string", "description": "Directory path (default '.')"},
+        "recursive": {"type": "boolean", "description": "List recursively (default false)"},
+        "glob": {"type": "string", "description": "Filename glob filter (default '*')"},
+    }
 
     def execute(self, params, workdir=None):
         path = params.get("path", ".")
@@ -154,6 +178,11 @@ class FindFileTool:
         "max_results (int, optional, default 50)."
     )
     auto_approve = True
+    parameters = {
+        "pattern": {"type": "string", "required": True, "description": "Glob pattern to match file names (e.g. '*.py')"},
+        "path": {"type": "string", "description": "Directory to search (default '.')"},
+        "max_results": {"type": "integer", "description": "Maximum number of results (default 50)"},
+    }
 
     def execute(self, params, workdir=None):
         pattern = params.get("pattern", "*")
@@ -188,6 +217,12 @@ class SearchInFilesTool:
         "glob (string, optional, default '*'), max_results (int, optional, default 50)."
     )
     auto_approve = True
+    parameters = {
+        "pattern": {"type": "string", "required": True, "description": "Regex pattern to search for"},
+        "path": {"type": "string", "description": "File or directory to search (default workdir)"},
+        "glob": {"type": "string", "description": "File glob filter, e.g. '*.py' (default: all files)"},
+        "max_results": {"type": "integer", "description": "Maximum matching lines to return (default 50)"},
+    }
 
     def execute(self, params, workdir=None):
         pattern = params.get("pattern", "")
@@ -233,6 +268,11 @@ class PeekFileTool:
         "tail (int, optional, default 20)."
     )
     auto_approve = True
+    parameters = {
+        "path": {"type": "string", "required": True, "description": "Path to the file"},
+        "head": {"type": "integer", "description": "Lines to show from the start (default 20)"},
+        "tail": {"type": "integer", "description": "Lines to show from the end (default 20)"},
+    }
 
     def execute(self, params, workdir=None):
         path = params.get("path", "")
@@ -269,6 +309,9 @@ class MkdirTool:
         "Parameters: path (string, required)."
     )
     auto_approve = True
+    parameters = {
+        "path": {"type": "string", "required": True, "description": "Directory path to create (parents auto-created)"},
+    }
 
     def execute(self, params, workdir=None):
         path = params.get("path", "")
@@ -289,6 +332,11 @@ class CopyFileTool:
         "overwrite (bool, optional, default false)."
     )
     auto_approve = True
+    parameters = {
+        "source": {"type": "string", "required": True, "description": "Source path"},
+        "destination": {"type": "string", "required": True, "description": "Destination path"},
+        "overwrite": {"type": "boolean", "description": "Overwrite existing destination (default false)"},
+    }
 
     def execute(self, params, workdir=None):
         src = params.get("source", "")
@@ -324,6 +372,11 @@ class MoveFileTool:
         "overwrite (bool, optional, default false)."
     )
     auto_approve = True
+    parameters = {
+        "source": {"type": "string", "required": True, "description": "Source path"},
+        "destination": {"type": "string", "required": True, "description": "Destination path"},
+        "overwrite": {"type": "boolean", "description": "Overwrite existing destination (default false)"},
+    }
 
     def execute(self, params, workdir=None):
         src = params.get("source", "")

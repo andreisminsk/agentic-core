@@ -1,4 +1,10 @@
-"""Example: embed agentic_core in an Ollama chat app."""
+"""Example: embed agentic_core in an Ollama chat app.
+
+Text-protocol mode (default): the model issues FILE:/WRITE:/EDIT:/RUN:/TOOL:
+blocks. For solicited native tool calling (schemas on the wire, function-
+calling models), see example-native.py — or pass native_tools=True and
+tools_mode="hybrid"/"native" to AgenticSession.
+"""
 
 import sys
 from agentic_core import AgenticSession, AgenticInterrupted, build_system_prompt
@@ -50,6 +56,12 @@ def main():
         auto_approve_safe=False,  # ask before WRITE/EDIT/RUN
         # confirm_callback=None → uses built-in default with y/N/auto/all/always/d
         max_feedback_rounds=3,
+        # Native tool calling (function-calling models) — see example-native.py:
+        native_tools=True,        # None/False = off (default, text protocol)
+                                  # True = solicit: tool schemas on the wire
+        tools_mode="hybrid",        # "text" (default) | "hybrid" (schemas +
+                                  #   text blocks preferred, native backup)
+                                  # | "native" (schemas, single channel)
     )
 
     print("Agentic session ready. Type 'quit' to exit.\n")

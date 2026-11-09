@@ -2,7 +2,7 @@
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests: 202](https://img.shields.io/badge/tests-202%20passed-brightgreen.svg)](#testing)
+[![Tests: 274](https://img.shields.io/badge/tests-265%20passed-brightgreen.svg)](#testing)
 [![Dependencies: 0](https://img.shields.io/badge/dependencies-0%20hard-blue.svg)](#dependencies)
 
 A minimalistic, reusable Python package that gives any LLM chat
@@ -26,6 +26,7 @@ The project is originated from uhu, the minimalistic agentic coder (https://gith
 - [Dependencies](#dependencies)
 - [Quick Start](#quick-start)
 - [Backends](#backends)
+- [Native Tool Calling](#native-tool-calling)
 - [How It Works](#how-it-works)
 - [The Block Protocol](#the-block-protocol)
 - [Integration Guide](#integration-guide)
@@ -72,8 +73,8 @@ optional TPM limiting, history trimming, and retry).
   markdown blocks, and edge cases from real LLM output
 - **Multi-backend** — Ollama and OpenAI-compatible APIs via pluggable
   backends, with optional TPM rate limiting and context trimming
-- **Comprehensive test suite** — 202 tests covering parser, executor,
-  session loop, streaming, interruption, and backend middleware
+- **Comprehensive test suite** — 274 tests covering parser, executor,
+  session loop, streaming, interruption, native tool calling, and backend middleware
 
 ---
 
@@ -361,6 +362,112 @@ backend._retry = RetryHandler(triggers=["429", "connection"], max_retries=3)
 backend._trimmer = HistoryTrimmer(backend._token_counter, max_tokens=32768)
 ```
 
+
+---
+
+## Native Tool Calling
+
+Function-calling models can express tool use through the API's structured
+`tool_calls` channel instead of (or alongside) text action blocks. The core
+supports this in two layers:
+
+**Passive (always on) — unsolicited capture.** Both backends capture native
+tool_calls from every response, normalize them
+(`agentic_core/tool_calls.py`), and merge them into the action round alongside
+any text-block actions (sig-dedupe handles models emitting both channels).
+Channel mixing — a text block poured into the tool-call name slot — is
+detected and steered back to one channel; a >64-char blob name degrades to
+`_malformed_native_call`. These guards apply in EVERY mode, including
+text-only sessions with spontaneous native callers.
+
+**Active (opt-in) — solicitation.** Pass `native_tools=True` and a
+`tools_mode` to attach tool schemas to the request (the `tools` param):
+
+```python
+session = AgenticSession(
+    client=client,
+    model="my-function-calling-model",
+    tools=True,
+    native_tools=True,     # attach tools_schemas() to the backend
+    tools_mode="hybrid",   # or "native"
+)
+```
+
+| Mode | Wire schemas | System prompt | File content path |
+|------|:---:|---|---|
+| `text` (default) | ❌ | Full text-protocol docs + TOOL: registry | TEXT blocks |
+| `hybrid` (recommended for tool-capable models) | ✅ | Compact channel rules; TEXT blocks **preferred** for file content | TEXT blocks first, `read_file`/`write_file`/`replace_in_file` as native **backup** |
+| `native` | ✅ | Compact channel rules; single channel | Native tool calls only |
+
+Why hybrid keeps the file tools on the wire (uhu field lesson): exclusion
+cornered models — the prompt demanded text-block output the native chat
+template made hard to emit, and the text poured into the tool-call name slot
+(channel mixing). With both paths genuinely available, models switch
+fluently and a failed text block leaves a native recovery path.
+
+### Schemas
+
+`tools_schemas()` builds the wire array from each tool's flat `parameters`
+dict — the same params documented in prose. All 16 built-in tools carry
+schemas. Tools without `parameters` (custom prose-only tools) are skipped
+from the wire but stay reachable via **TOOL:** blocks. A `float` type alias
+is guarded to `number` (JSON Schema has no float — a bad declaration would
+get the whole tools array rejected by the wire).
+
+```python
+from agentic_core.tools import tools_schemas, tools_native_prompt, register
+
+class EchoTool(Tool):
+    name = "echo"
+    description = "Echo back the provided text."
+    system_prompt = "## echo\nEcho back text. Parameters: text (string, required)."
+    # Native wire schema (flat format; matches the TOOL: block params)
+    parameters = {
+        "text": {"type": "string", "required": True, "description": "Text to echo"},
+    }
+    def execute(self, params, workdir=None):
+        return f"Echo: {params.get('text', '')}"
+
+register(EchoTool())
+schemas = tools_schemas()          # built-ins + echo
+prompt = tools_native_prompt("hybrid")  # compact channel rules for the prompt
+```
+
+Custom tools that declare `parameters` are solicited automatically; the rest
+keep working through the text protocol.
+
+### Backend wiring
+
+```python
+# OllamaBackend — schemas ride as a chat kwarg; a client with a narrower
+# .chat() signature degrades to text-channel solicitation (capture stays on)
+backend = OllamaBackend(client, model, tools_schemas=tools_schemas())
+
+# OpenAIBackend — schemas attach to chat.completions.create; a provider that
+# rejects the tools param triggers a drop-and-retry fallback
+backend = OpenAIBackend(base_url=..., api_key=..., model=...,
+                        tools_schemas=tools_schemas())
+
+# Capability hint — the core never probes the server (transport-agnostic);
+# hosts that CAN detect tool support (e.g. uhu via /api/tags) set it:
+backend.supports_tools = True
+```
+
+**Wire protocol:** after an assistant `tool_calls` message, tool-role results
+must follow immediately (one per call). The core's stored history keeps a
+single user-observation message (or per-call tool roles); at the wire
+boundary `_wire_tool_results()` splits observations into per-call `tool`
+messages, synthesizing stable `tool_call_id`s on both sides when absent, and
+defers intervening system messages past the results. Stored history shape is
+unchanged (`{"role", "content"}` — `tool_calls` is an additive key on
+assistant entries).
+
+**Channel-mixing counter:** 1st mixing event → steering observation ("choose
+exactly one channel"); 3rd → the observation also suggests going
+native-only for the rest of the session.
+
+See `example-native.py` for a complete runnable session in hybrid mode.
+
 ---
 
 ## How It Works
@@ -621,6 +728,10 @@ the agentic loop; your app handles input/output and session persistence.
   system (`y/N/auto/all/always/d`), registers a custom `EchoTool` and
   `GreetingSkill`, and handles `AgenticInterrupted` (Ctrl+C) gracefully.
   Start here for the simplest integration.
+
+- **`example-native.py`** — Native tool calling in hybrid mode: schemas on
+  the wire, text blocks preferred with native backup. Start here when your
+  model is function-calling capable.
 
 - **`example-callback.py`** — Custom confirmation callback. Demonstrates a
   selective approval policy: auto-approves safe tools and safe RUN commands,
@@ -961,6 +1072,8 @@ AgenticSession(
     on_chunk=None,           # Callback(chunk_text) for streaming display
     max_feedback_rounds=None,# Override default (3) agentic loop rounds
     config_filename="agentic-core.json",  # Persistent auto-approval config file
+    native_tools=None,       # True = solicited native tool calling (schemas on wire)
+    tools_mode="text",       # "text" | "hybrid" | "native" (see Native Tool Calling)
 )
 ```
 
@@ -984,7 +1097,10 @@ takes precedence.
 from agentic_core.backends import Backend, OllamaBackend, OpenAIBackend
 
 # OllamaBackend — zero middleware, thin wrapper around duck-typed client
-OllamaBackend(client, model, temperature=0.0)
+OllamaBackend(client, model, temperature=0.0, tools_schemas=None)
+#   tools_schemas: optional wire array — sets backend.tools_schemas so .call()
+#   attaches {"tools": [...]} (native solicitation). Backend.supports_tools is
+#   a host-set capability hint (None = unknown; the core never probes).
 
 # OpenAIBackend — auto-configures middleware based on tpm_limit
 OpenAIBackend(
@@ -997,6 +1113,7 @@ OpenAIBackend(
     tpm_limit=None,        # TPM limit (activates full middleware bundle)
     max_context=None,      # trim budget cap when tpm_limit is set (default 16384)
     quiet=False,            # suppress TPM/retry status messages
+    tools_schemas=None,    # native solicitation (drop-and-retry on provider reject)
 )
 ```
 
@@ -1117,6 +1234,9 @@ agent personas that still need the protocol.
 | `time_now` | ✅ | Current date/time/timezone | — |
 | `calculator` | ✅ | Safe math expression evaluation | — |
 | `image-analysis` | ❌ | Analyze images via vision model | `ollama` (required) |
+
+All 16 built-in tools declare native schemas (`parameters`), so
+`tools_schemas()` covers the full registry — see [Native Tool Calling](#native-tool-calling).
 
 ### Configuring Image Analysis
 
@@ -1281,7 +1401,7 @@ AgenticSession
 
 ## Testing
 
-The project includes 202 tests across five test files:
+The project includes 274 tests across eight test files:
 
 ```bash
 # Run all tests
@@ -1301,6 +1421,15 @@ python -m pytest tests/test_mcp.py -v
 
 # Run only RUN stop/timeout tests
 python -m pytest tests/test_run_stop.py -v
+
+# Run only native tool_calls tests (schemas, wire, mixing)
+python -m pytest tests/test_tool_calls.py -v
+
+# Run only cross-send radar tests
+python -m pytest tests/test_cross_send_radar.py -v
+
+# Run only SystemExit guard tests
+python -m pytest tests/test_system_exit_guard.py -v
 ```
 
 ### Test Coverage
@@ -1310,8 +1439,11 @@ python -m pytest tests/test_run_stop.py -v
 | `test_parser.py` | 109 | Parser (WRITE/EDIT/FILE/RUN/TOOL/SKILL), matching, edit utils, action executor safety |
 | `test_session.py` | 21 | Feedback loop, streaming, interruption handling, system prompt |
 | `test_backends.py` | 33 | OllamaBackend, OpenAIBackend, TokenCounter, TPMTracker, RetryHandler, HistoryTrimmer, Backend.call() orchestration |
-| `test_mcp.py` | 32 | MCP manager, transports, tool registration, auth tokens |
+| `test_mcp.py` | 47 | MCP manager, transports, tool registration, auth tokens, native schemas for registered mcp_* tools |
 | `test_run_stop.py` | 7 | RUN stop-check, process-tree kill, timeout behavior |
+| `test_tool_calls.py` | 47 | Native tool_calls: normalizer, fragment merge, schema builder, wire injection, all three tools_mode branches e2e, channel-mixing steering + counter |
+| `test_cross_send_radar.py` | 7 | Cross-send repetition radar (re-prompt detection, decay, reset) |
+| `test_system_exit_guard.py` | 3 | SystemExit inside tools converted to failure |
 
 The session and backend tests use mock clients (`MockClient`,
 `InterruptingClient`, `MockOllamaClient`, `MockOpenAIClient`) that

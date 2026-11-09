@@ -33,6 +33,10 @@ class WebSearchTool:
     )
     auto_approve = False  # makes external network requests
 
+    parameters = {
+        "query": {"type": "string", "required": True, "description": "The search query"},
+        "num_results": {"type": "integer", "description": "Number of results to return (max 10, default 5)"},
+    }
     def execute(self, params, workdir=None):
         query = params.get("query")
         if not query:
@@ -121,6 +125,11 @@ class WebFetchTool:
     )
     auto_approve = False  # makes external network requests
 
+    parameters = {
+        "url": {"type": "string", "required": True, "description": "The URL to fetch"},
+        "max_length": {"type": "integer", "description": "Maximum characters to return (default 3000)"},
+        "summarize": {"type": "boolean", "description": "If true, use LLM to summarize the page content"},
+    }
     def __init__(self, llm_client=None, llm_model=None):
         """Optional LLM client for summarization. If None, summarization is skipped."""
         self.llm_client = llm_client
@@ -256,6 +265,15 @@ class HttpRequestTool:
     )
     auto_approve = False  # makes external network requests
 
+    parameters = {
+        "url": {"type": "string", "required": True, "description": "The URL to request"},
+        "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "description": "HTTP method (default GET)"},
+        "headers": {"type": "object", "description": "Request headers as key-value pairs"},
+        "body": {"type": "string", "description": "Request body (for POST/PUT/PATCH)"},
+        "json_body": {"type": "object", "description": "Request body as JSON (overrides body)"},
+        "timeout": {"type": "integer", "description": "Timeout in seconds (default 30)"},
+        "max_length": {"type": "integer", "description": "Maximum response body length to return (default 5000)"},
+    }
     def execute(self, params, workdir=None):
         url = params.get("url", "")
         method = params.get("method", "GET").upper()
@@ -352,6 +370,9 @@ class TimeNowTool:
     )
     auto_approve = True
 
+    parameters = {
+        "utc": {"type": "boolean", "description": "Also show UTC time (default false)"},
+    }
     def execute(self, params, workdir=None):
         show_utc = params.get("utc", False)
         now = datetime.now()

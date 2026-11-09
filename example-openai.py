@@ -2,6 +2,8 @@
 
 Demonstrates using OpenAIBackend to connect to any OpenAI-compatible endpoint
 (OpenAI, Ollama /v1, vLLM, LM Studio, etc.) without tokens-per-minute limiting.
+For solicited native tool calling on the same backend, see example-native.py
+(pass tools_schemas= to OpenAIBackend + native_tools=True to the session).
 
 Requires:
     pip install openai
@@ -73,6 +75,13 @@ def main():
         name="myapp",
         auto_approve_safe=False,  # ask before WRITE/EDIT/RUN
         max_feedback_rounds=3,
+        # Native tool calling (this backend supports tools_schemas= — see
+        # example-native.py for the full wiring):
+        native_tools=None,        # None/False = off (default, text protocol)
+                                  # True = solicit: tool schemas on the wire
+        tools_mode="text",        # "text" (default) | "hybrid" (schemas +
+                                  #   text blocks preferred, native backup)
+                                  # | "native" (schemas, single channel)
     )
 
     print(f"Agentic session ready (OpenAI backend: {base_url}, model: {model}).")

@@ -1,0 +1,204 @@
+## Operation 1
+
+# hf_fs cat
+
+URI: `hf://models/reflection/Beam-1.0-501B-A23B/README.md`
+Path: `README.md`
+Bytes: 12000
+
+---
+license: apache-2.0
+language:
+  - en
+pipeline_tag: text-generation
+tags:
+  - mixture-of-experts
+  - reasoning
+  - code
+  - tool-use
+---
+
+<p align="center">
+  <img src="https://cdn-uploads.huggingface.co/production/uploads/620a77b7dbba8fc1fbb8bdb4/N-HiEVXlqtoniRSdFo0RG.png" width="100%" alt="Model Card banner">
+</p>
+
+
+<p align="center">
+  <a href="https://huggingface.co/reflection">Hugging Face</a> |
+  <a href="https://github.com/reflection-oss">GitHub</a> |
+  <a href="https://reflection.ai/blog">Launch Blog</a> |
+  <a href="https://developers.reflection.ai/introduction">Documentation</a> |
+  Technical Report (coming)
+  <br>
+  <b>License</b>: <a href="https://huggingface.co/reflection/Beam-1.0-501B-A23B/blob/main/LICENSE">Apache 2.0</a> |
+  <b>Authors</b>: <a href="https://reflection.ai/">Reflection</a>
+</p>
+
+Beam is an open model built by Reflection. Beam takes text as input and generates text as output. This release includes the instruction-tuned model in BF16, FP8, and NVFP4 numerics. Beam uses a sparse mixture-of-experts (MoE) architecture with 501B total parameters and 23B active parameters. It supports a context window of 1M tokens and was developed predominantly for English.
+
+### Primary capabilities
+
+- **Token-efficient reasoning:** Reaches comparable solution quality to leading open models using approximately 3x fewer inference-time reasoning tokens.
+
+- **Software engineering:** Resolves real-world GitHub issues, operates in CLI and DevOps environments, and integrates directly with agentic coding harnesses. Code generation supported across languages.
+
+- **Agentic tool use:**  Long-horizon task completion, MCP-based tool integration, and browsing. Executes multi-step workflows from natural-language instructions.
+
+- **Reasoning (math and science):** Graduate-level science problem solving, theorem proving, and applied mathematics. Reasoning quality transfers to debugging, planning, and self-correction during agentic execution.
+
+## Model Overview
+
+Beam models are designed to deliver strong performance for areas such as agentic tool use, coding and general reasoning with an emphasis on token efficient usage.
+
+<div class="dark:hidden" style="overflow-x:auto;">
+<table align="center" style="display:table;width:auto;max-width:100%;margin-left:auto;margin-right:auto;border-collapse:collapse;">
+<thead>
+<tr>
+<th scope="col" style="padding:12px;text-align:left;background:#274E13;color:#FFFFFF;border-bottom:2px solid #274E13;">Property</th>
+<th scope="col" style="padding:12px;text-align:center;background:#274E13;color:#FFFFFF;border-bottom:2px solid #274E13;">Beam 501B A23B MoE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1">Total Parameters</th>
+<td style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1">501.3B</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1">Active Parameters</th>
+<td style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1">23.4B</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1">Layers</th>
+<td style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1">52: 3 dense + 49 MoE</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1">Attention</th>
+<td style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1">Gated GQA + Sliding Window Attention</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1">Context Length</th>
+<td style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1">1M</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1">Vocabulary Size</th>
+<td style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1">152k tokens</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1">Expert Count</th>
+<td style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1">256</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1">Supported Modalities</th>
+<td style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1">Text</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1">Chat Template</th>
+<td style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1">Modified Harmony format</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1">Numerics</th>
+<td style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1">BF16, FP8, NVFP4</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1">Knowledge cutoff</th>
+<td style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1">June 30, 2026</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="hidden dark:block" style="overflow-x:auto;">
+<table align="center" style="display:table;width:auto;max-width:100%;margin-left:auto;margin-right:auto;border-collapse:collapse;">
+<thead>
+<tr>
+<th scope="col" style="padding:12px;text-align:left;background:#274E13;color:#FFFFFF;border-bottom:2px solid #274E13;">Property</th>
+<th scope="col" style="padding:12px;text-align:center;background:#274E13;color:#FFFFFF;border-bottom:2px solid #274E13;">Beam 501B A23B MoE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#1A2B1A;color:#DCEAD2;border-bottom:1px solid #243624">Total Parameters</th>
+<td style="padding:10px 12px;text-align:left;color:#B7C2B6;border-bottom:1px solid #243624">501.3B</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#1A2B1A;color:#DCEAD2;border-bottom:1px solid #243624">Active Parameters</th>
+<td style="padding:10px 12px;text-align:left;color:#B7C2B6;border-bottom:1px solid #243624">23.4B</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#1A2B1A;color:#DCEAD2;border-bottom:1px solid #243624">Layers</th>
+<td style="padding:10px 12px;text-align:left;color:#B7C2B6;border-bottom:1px solid #243624">52: 3 dense + 49 MoE</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#1A2B1A;color:#DCEAD2;border-bottom:1px solid #243624">Attention</th>
+<td style="padding:10px 12px;text-align:left;color:#B7C2B6;border-bottom:1px solid #243624">Gated GQA + Sliding Window Attention</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#1A2B1A;color:#DCEAD2;border-bottom:1px solid #243624">Context Length</th>
+<td style="padding:10px 12px;text-align:left;color:#B7C2B6;border-bottom:1px solid #243624">1M</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#1A2B1A;color:#DCEAD2;border-bottom:1px solid #243624">Vocabulary Size</th>
+<td style="padding:10px 12px;text-align:left;color:#B7C2B6;border-bottom:1px solid #243624">152k tokens</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#1A2B1A;color:#DCEAD2;border-bottom:1px solid #243624">Expert Count</th>
+<td style="padding:10px 12px;text-align:left;color:#B7C2B6;border-bottom:1px solid #243624">256</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#1A2B1A;color:#DCEAD2;border-bottom:1px solid #243624">Supported Modalities</th>
+<td style="padding:10px 12px;text-align:left;color:#B7C2B6;border-bottom:1px solid #243624">Text</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#1A2B1A;color:#DCEAD2;border-bottom:1px solid #243624">Chat Template</th>
+<td style="padding:10px 12px;text-align:left;color:#B7C2B6;border-bottom:1px solid #243624">Modified Harmony format</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#1A2B1A;color:#DCEAD2;border-bottom:1px solid #243624">Numerics</th>
+<td style="padding:10px 12px;text-align:left;color:#B7C2B6;border-bottom:1px solid #243624">BF16, FP8, NVFP4</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;font-weight:400;background:#1A2B1A;color:#DCEAD2;border-bottom:1px solid #243624">Knowledge cutoff</th>
+<td style="padding:10px 12px;text-align:left;color:#B7C2B6;border-bottom:1px solid #243624">June 30, 2026</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+## Benchmark Results
+
+These models were evaluated against a large collection of different datasets and metrics to cover different aspects of text generation. Evaluation results marked in the table are for instruction-tuned models spanning all released numerics. Note: All evaluations were done using temp=0.7, top_p=0.99.
+
+<div class="dark:hidden" style="overflow-x:auto;">
+<table align="center" style="display:table;width:auto;max-width:100%;margin-left:auto;margin-right:auto;border-collapse:collapse;">
+<thead>
+<tr>
+<th scope="col" style="padding:12px;text-align:left;background:#274E13;color:#FFFFFF;border-bottom:2px solid #274E13;">Benchmark</th>
+<th scope="col" style="padding:12px;text-align:center;background:#274E13;color:#FFFFFF;border-bottom:2px solid #274E13;">Beam<br>(BF16)</th>
+<th scope="col" style="padding:12px;text-align:center;background:#274E13;color:#FFFFFF;border-bottom:2px solid #274E13;">Beam<br>(FP8)</th>
+<th scope="col" style="padding:12px;text-align:center;background:#274E13;color:#FFFFFF;border-bottom:2px solid #274E13;">Beam<br>(NVFP4)</th>
+</tr>
+</thead>
+<tbody>
+<tr><th colspan="4" scope="colgroup" style="padding:10px 12px;text-align:left;background:#D9E8D1;color:#274E13;border-bottom:1px solid #B8CFA9;">Agentic Coding / Terminal</th></tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1;font-weight:400;">DeepSWE v1.1</th>
+<td style="padding:10px 12px;text-align:center;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1;">43.3%</td>
+<td style="padding:10px 12px;text-align:center;border-bottom:1px solid #D9E8D1;">43.0%</td>
+<td style="padding:10px 12px;text-align:center;border-bottom:1px solid #D9E8D1;">42.7%</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1;font-weight:400;">SWE Bench Pro v2-Hard</th>
+<td style="padding:10px 12px;text-align:center;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1;">76.5%</td>
+<td style="padding:10px 12px;text-align:center;border-bottom:1px solid #D9E8D1;">78.4%</td>
+<td style="padding:10px 12px;text-align:center;border-bottom:1px solid #D9E8D1;">78.6%</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1;font-weight:400;">SWE Bench Pro v1</th>
+<td style="padding:10px 12px;text-align:center;background:#EFF5EB;color:#274E13;border-bottom:1px solid #D9E8D1;">66.1%</td>
+<td style="padding:10px 12px;text-align:center;border-bottom:1px solid #D9E8D1;">65.9%</td>
+<td style="padding:10px 12px;text-align:center;border-bottom:1px solid #D9E8D1;">65.6%</td>
+</tr>
+<tr>
+<th scope="row" style="padding:10px 12px;text-align:left;border-bottom:1px solid #D9E8D1;font-weight:400;">Terminal Bench v2.1</th>
+<td style="padding:10px 12
+
+Content truncated. Resume with offset 12000.
