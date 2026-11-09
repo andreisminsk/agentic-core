@@ -187,5 +187,64 @@ class TestSessionIntegration(unittest.TestCase):
         self.assertIsNone(session._pending_native)
 
 
+class TestChannelMixingSteer(unittest.TestCase):
+    """Port of uhu 6313cfa: text-action marker detection must come BEFORE the
+    long-name blob guard, and the sentinel must steer the model back to one
+    channel instead of failing as 'Unknown tool'."""
+
+    FIELD_BLOB = ('EDIT:`app.py`\n```search-replace\n<<<<<<< SEARCH\n'
+                  'old code line here that is quite long indeed yes\n'
+                  '=======\n>>>>>>> REPLACE\n```' + 'x' * 200)
+
+    def test_marker_detected_before_long_blob_guard(self):
+        out = normalize_tool_calls([{"function": {"name": self.FIELD_BLOB,
+                                                  "arguments": {}}}])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["name"], "_text_action_mixing")
+        self.assertTrue(out[0]["params"]["_raw"].startswith("EDIT:`app.py`"))
+
+    def test_short_marker_name_still_steers(self):
+        out = normalize_tool_calls([{"function": {"name": "WRITE:`hello.py`",
+                                                  "arguments": {}}}])
+        self.assertEqual(out, [{"name": "_text_action_mixing",
+                                "params": {"_raw": "WRITE:`hello.py`"}}])
+
+    def test_long_blob_without_marker_still_malformed(self):
+        out = normalize_tool_calls([{"function": {"name": "T" + "x" * 300,
+                                                  "arguments": {}}}])
+        self.assertEqual(out[0]["name"], "_malformed_native_call")
+
+    def test_malformed_message_content(self):
+        from agentic_core.tool_calls import looks_like_text_action
+        for marker in ("WRITE:", "EDIT:`f`", "FILE:`f`", "RUN:\n```bash"):
+            self.assertTrue(looks_like_text_action(marker))
+        self.assertFalse(looks_like_text_action("plain_name"))
+        self.assertFalse(looks_like_text_action("a:b"))
+
+    def test_steering_message_via_session(self):
+        class MixingClient:
+            def chat(self, model, messages, stream, options):
+                if len(messages) == 2:
+                    return {"message": {"content": "", "tool_calls": [
+                                {"function": {"name": "_text_action_mixing",
+                                              "arguments": {
+                                                  "_raw": "EDIT:`app.py` <<< ..."}}}]},
+                            "prompt_eval_count": 5}
+                return {"message": {"content": "Recovered."},
+                        "prompt_eval_count": 9}
+
+        backend = OllamaBackend(MixingClient(), "m")
+        session = AgenticSession(backend=backend, model="m", workdir=".",
+                                 tools=False, stream=False,
+                                 auto_approve_safe=True)
+        final = session.run("do it")
+        self.assertIn("Recovered", final)
+        obs = session.history[3]["content"]
+        self.assertIn("channel mixing", obs)
+        self.assertIn("Option A", obs)
+        self.assertIn("Option B", obs)
+        self.assertIn("'replace_in_file'", obs)
+
+
 if __name__ == "__main__":
     unittest.main()

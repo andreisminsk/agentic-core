@@ -523,6 +523,24 @@ class ActionExecutor(CommandSafety, FileOperations):
             return f"Error parsing tool params for {name}: {json_err}"
         tool = get_tool(name)
         if tool is None:
+            # Sentinel: channel mixing — a text action block was emitted inside
+            # a native tool call. Steer the model to one channel (uhu 6313cfa).
+            if name == "_text_action_mixing":
+                raw = str(params.get("_raw", ""))[:80]
+                marker = raw.strip().split(":", 1)[0].split("`", 1)[0].upper() if raw else ""
+                backup = {"WRITE": "write_file", "EDIT": "replace_in_file",
+                          "FILE": "read_file"}.get(marker, "run_command")
+                msg = (
+                    f"[TOOL FAILED: channel mixing — you put a {marker or 'text'} action block "
+                    f"('{raw}') inside a native tool call. {marker or 'Text'} blocks are not tools. "
+                    f"NEXT RESPONSE: choose exactly one channel. "
+                    f"Option A: output the full {marker or 'text'} block as normal assistant text only "
+                    f"(do not call any tool; include the matching EOF marker). "
+                    f"Option B: call the native tool '{backup}' with JSON parameters only "
+                    f"(do not include {marker or 'text'} block syntax in the tool call).]"
+                )
+                tool_print(msg + "\n")
+                return msg
             return f"Error: unknown tool: {name}"
         try:
             result = tool.execute(params, workdir=self.workdir)

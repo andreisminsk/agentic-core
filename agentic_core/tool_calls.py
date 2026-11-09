@@ -78,18 +78,21 @@ def normalize_tool_calls(raw):
                 args = getattr(tc, "arguments", None)
         if not name:
             continue
-        # Channel-mixing blob in the name slot: degrade to a _raw-style entry
-        # so the pipeline reports a clear, actionable failure instead of
-        # "Unknown tool '<500-char blob>'". Checked BEFORE the marker cleanup:
-        # a long blob is unreconstructable; a short marker name is steerable.
-        if len(name) > _MAX_NATIVE_NAME_LEN:
-            out.append({"name": "_malformed_native_call",
-                        "params": {"_raw": name[:512]}})
-            continue
-        # Text-action marker in the name slot (WRITE:`hello.py` etc.):
-        # degrade to a steering entry — NOT auto-executed (name may be truncated).
+        # Text-action marker in the native name slot (hybrid mode): the model
+        # tried to emit FILE:/WRITE:/EDIT:/RUN: as a function/tool call instead
+        # of plain assistant text. Detect this BEFORE the long-name guard so a
+        # full text block like "EDIT:`file`\n```search-replace..." is reported
+        # as channel mixing, not a generic malformed native call.
+        # (uhu 6313cfa: guard order swapped from the original blob-first order.)
         if looks_like_text_action(name):
             out.append({"name": "_text_action_mixing",
+                        "params": {"_raw": name[:512]}})
+            continue
+        # Channel-mixing / corruption blob in the name slot: degrade to a
+        # _raw-style entry so the pipeline reports a clear, actionable failure
+        # instead of "Unknown tool '<500-char blob>'".
+        if len(name) > _MAX_NATIVE_NAME_LEN:
+            out.append({"name": "_malformed_native_call",
                         "params": {"_raw": name[:512]}})
             continue
         name = _clean_native_name(str(name))
